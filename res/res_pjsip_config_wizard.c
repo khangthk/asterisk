@@ -49,6 +49,10 @@
 #include "asterisk/pbx.h"
 #include "asterisk/sorcery.h"
 #include "asterisk/vector.h"
+#include "asterisk/stasis.h"
+#include "asterisk/acl.h"
+#include "asterisk/security_events.h"
+#include "asterisk/lock.h"
 
 /*** DOCUMENTATION
 	<configInfo name="res_pjsip_config_wizard" language="en_US">
@@ -134,7 +138,7 @@
 					<description><para>A comma-separated list of remote hosts in the form of
 					<replaceable>host</replaceable>[:<replaceable>port</replaceable>].
 					If set, an aor static contact and an identify match will be created for each
-					entry in the list.  If send_registrations is also set, a registration will
+					entry in the list.  If sends_registrations is also set, a registration will
 					also be created for each.</para></description>
 				</configOption>
 				<configOption name="outbound_proxy">
@@ -154,11 +158,11 @@
 				<configOption name="sends_registrations" default="no">
 					<synopsis>Send outbound registrations to remote hosts.</synopsis>
 					<description><para>remote_hosts is required and a registration object will
-					be created for each host in the remote _hosts string.  If authentication is required,
+					be created for each host in the remote_hosts string.  If authentication is required,
 					sends_auth and an outbound_auth/username must also be supplied.</para></description>
 				</configOption>
 				<configOption name="sends_line_with_registrations" default="no">
-					<synopsis>Sets "line" and "endpoint parameters on registrations.</synopsis>
+					<synopsis>Sets "line" and "endpoint" parameters on registrations.</synopsis>
 					<description><para>Setting this to true will cause the wizard to skip the
 					creation of an identify object to match incoming requests to the endpoint and
 					instead add the line and endpoint parameters to the outbound registration object.
@@ -167,7 +171,7 @@
 				<configOption name="accepts_registrations" default="no">
 					<synopsis>Accept inbound registration from remote hosts.</synopsis>
 					<description><para>An AOR with dynamic contacts will be created.  If
-					the number of contacts nneds to be limited, set aor/max_contacts.</para></description>
+					the number of contacts needs to be limited, set aor/max_contacts.</para></description>
 				</configOption>
 				<configOption name="has_phoneprov" default="no">
 					<synopsis>Create a phoneprov object for this endpoint.</synopsis>
@@ -297,6 +301,31 @@ static AST_VECTOR_RW(object_type_wizards, struct object_type_wizard *) object_ty
 
 const static char *object_types[] = {"phoneprov", "registration", "identify", "endpoint", "aor", "auth", NULL};
 
+/*
+ * Sorcery observers do not receive the reload reason, so track Named ACL
+ * initiated reloads while they are pending or running.
+ */
+static int named_acl_reload_count = 0;
+static struct stasis_subscription *acl_change_sub;
+AST_MUTEX_DEFINE_STATIC(config_wizard_observer_lock);
+
+#define IS_ACL_RELOAD_ACTIVE() (ast_atomic_fetchadd_int(&named_acl_reload_count, 0) > 0)
+
+static int reload_module(void);
+
+/*! \brief Callback for Named ACL changed */
+static void acl_change_stasis_cb(void *data, struct stasis_subscription *sub, struct stasis_message *message)
+{
+	if (stasis_message_type(message) != ast_named_acl_change_type()) {
+		return;
+	}
+
+	ast_debug(3, "PJSIP Wizard: Named ACL change detected via Stasis. Triggering reload.\n");
+	ast_atomic_fetchadd_int(&named_acl_reload_count, +1);
+	reload_module();
+	ast_atomic_fetchadd_int(&named_acl_reload_count, -1);
+}
+
 static int is_one_of(const char *needle, const char *haystack[])
 {
 	int i;
@@ -425,7 +454,7 @@ static int add_extension(struct ast_context *context, const char *exten,
 	char *data = NULL;
 	char *app = NULL;
 	void *free_ptr = NULL;
-	char *paren;
+	const char *paren;
 	const char *context_name;
 
 	if (!context || ast_strlen_zero(exten) || ast_strlen_zero(application)) {
@@ -1052,6 +1081,7 @@ static void object_type_loaded_observer(const char *name,
 	char *filename = "pjsip_wizard.conf";
 	struct ast_flags flags = { 0 };
 	struct ast_config *cfg;
+	SCOPED_MUTEX(lock, &config_wizard_observer_lock);
 
 	if (!strstr("auth aor endpoint identify registration phoneprov", object_type)) {
 		/* Not interested. */
@@ -1064,7 +1094,9 @@ static void object_type_loaded_observer(const char *name,
 		return;
 	}
 
-	if (reloaded && otw->last_config) {
+	/* Only use the FILEUNCHANGED optimization if the ACLs haven't changed.
+	 * If ACLs changed, we force a reload of the config file to re-evaluate rules. */
+	if (reloaded && otw->last_config && !IS_ACL_RELOAD_ACTIVE()) {
 		flags.flags = CONFIG_FLAG_FILEUNCHANGED;
 	}
 
@@ -1089,6 +1121,14 @@ static void object_type_loaded_observer(const char *name,
 		if (otw->last_config) {
 			last_cat = ast_category_get(otw->last_config, id, "type=^wizard$");
 			changes = !ast_variable_lists_match(ast_category_first(category), ast_category_first(last_cat), 1);
+
+			/* If the ACL has changed, we assume EVERYTHING might have changed.
+			 * We force an update for all wizard objects. */
+			if (!changes && reloaded && IS_ACL_RELOAD_ACTIVE()) {
+				ast_debug(3, "Forcing update of wizard '%s' due to global ACL change.\n", id);
+				changes = 1;
+			}
+
 			if (last_cat) {
 				ast_category_delete(otw->last_config, last_cat);
 			}
@@ -1154,7 +1194,7 @@ static void object_type_registered_observer(const char *name,
 		if (ast_sorcery_object_type_apply_wizard(sorcery, object_type,
 			"memory", "pjsip_wizard", AST_SORCERY_WIZARD_APPLY_READONLY | AST_SORCERY_WIZARD_APPLY_ALLOW_DUPLICATE,
 			&wizard, &wizard_data) != AST_SORCERY_APPLY_SUCCESS) {
-			ast_log(LOG_ERROR, "Unable to apply sangoma wizard to object type '%s'\n", object_type);
+			ast_log(LOG_ERROR, "Unable to apply pjsip_wizard to object type '%s'\n", object_type);
 			return;
 		}
 
@@ -1216,7 +1256,7 @@ static char *handle_export_primitives(struct ast_cli_entry *e, int cmd, struct a
 	case CLI_INIT:
 		e->command = "pjsip export config_wizard primitives [to]";
 		e->usage =
-			"Usage: pjsip export config_wizard primitives [ to <filename ]\n"
+			"Usage: pjsip export config_wizard primitives [ to <filename> ]\n"
 			"       Export the config_wizard objects as pjsip primitives to\n"
 			"       the console or to <filename>\n";
 		return NULL;
@@ -1302,9 +1342,26 @@ static struct ast_cli_entry config_wizard_cli[] = {
 	AST_CLI_DEFINE(handle_export_primitives, "Export config wizard primitives"),
 };
 
+/*!
+ * \internal
+ * \brief Reload configuration within a PJSIP thread
+ */
+static int reload_configuration_task(void *obj)
+{
+	struct ast_sorcery *sip_sorcery = ast_sip_get_sorcery();
+	if (sip_sorcery) {
+		ast_sorcery_reload(sip_sorcery);
+	}
+	return 0;
+}
+
 static int reload_module(void)
 {
-	ast_sorcery_reload(ast_sip_get_sorcery());
+	if (ast_sip_push_task_wait_servant(NULL, reload_configuration_task, NULL)) {
+		ast_log(LOG_WARNING, "Failed to reload PJSIP\n");
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -1313,6 +1370,8 @@ static int load_module(void)
 	AST_VECTOR_RW_INIT(&object_type_wizards, 12);
 	ast_sorcery_global_observer_add(&global_observer);
 	ast_cli_register_multiple(config_wizard_cli, ARRAY_LEN(config_wizard_cli));
+
+	acl_change_sub = stasis_subscribe(ast_security_topic(), acl_change_stasis_cb, NULL);
 
 	/* If the PJSIP sorcery instance exists it means that we have been explicitly
 	 * loaded and things are potentially already set up. Since we won't receive any
@@ -1347,6 +1406,10 @@ static int load_module(void)
 
 static int unload_module(void)
 {
+	if (acl_change_sub) {
+		acl_change_sub = stasis_unsubscribe_and_join(acl_change_sub);
+	}
+
 	ast_cli_unregister_multiple(config_wizard_cli, ARRAY_LEN(config_wizard_cli));
 	ast_sorcery_global_observer_remove(&global_observer);
 	AST_VECTOR_REMOVE_ALL_CMP_UNORDERED(&object_type_wizards, NULL, NOT_EQUALS, OTW_DELETE_CB);

@@ -48,6 +48,7 @@ int ast_named_locks_init(void);		/*!< Provided by named_locks.c */
 int ast_file_init(void);		/*!< Provided by file.c */
 void ast_autoservice_init(void);	/*!< Provided by autoservice.c */
 int ast_tps_init(void); 		/*!< Provided by taskprocessor.c */
+int ast_taskpool_init(void);    /*!< Provided by taskpool.c */
 int ast_timing_init(void);		/*!< Provided by timing.c */
 void ast_stun_init(void);               /*!< Provided by stun.c */
 int ast_ssl_init(void);                 /*!< Provided by ssl.c */
@@ -58,6 +59,9 @@ void ast_msg_shutdown(void);        /*!< Provided by message.c */
 int aco_init(void);             /*!< Provided by config_options.c */
 int dns_core_init(void);        /*!< Provided by dns_core.c */
 int ast_refer_init(void);             /*!< Provided by refer.c */
+int ast_extension_state_init(void);     /*!< Provided by extension_state.c */
+int ast_extension_state_legacy_init(void); /*!< Provided by extension_state_legacy.c */
+int ast_extension_state_autohints_init(void); /*!< Provided by extension_state_autohints.c */
 
 /*!
  * \brief Initialize malloc debug phase 1.

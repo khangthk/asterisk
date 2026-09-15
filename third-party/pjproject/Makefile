@@ -58,21 +58,22 @@ ifeq ($(SPECIAL_TARGETS),)
         -include source/build.mak
         CF := $(filter-out -W%,$(CC_CFLAGS))
         CF := $(filter-out -I%,$(CF))
+        ifeq ($(PJPROJECT_BUNDLED_OOT),)
         ifeq ($(AST_DEVMODE),yes)
-            apps := source/pjsip-apps/bin/pjsua-$(TARGET_NAME) source/pjsip-apps/bin/pjsystest-$(TARGET_NAME)
-            TARGETS += $(apps)
-            ifneq ($(PYTHONDEV_LIB),)
-                TARGETS += source/pjsip-apps/src/python/_pjsua.so
-            endif
+		ifeq ($(findstring _SANITIZER,$(MENUSELECT_CFLAGS)),)
+			apps := source/pjsip-apps/bin/pjsua-$(TARGET_NAME)
+			TARGETS += $(apps)
+		endif
             CF += -DPJPROJECT_BUNDLED_ASSERTIONS=yes
         endif
-        MALLOC_DEBUG_LIBS = source/pjsip-apps/lib/libasterisk_malloc_debug.a
-        ifneq ($(findstring darwin,$(OSARCH)),)
-            MALLOC_DEBUG_LDFLAGS = -L$(PJDIR)/pjsip-apps/lib -Wl,-all_load -lasterisk_malloc_debug -Wl,-noall_load
-        else
-             # These are used for all but Darwin
-            MALLOC_DEBUG_LDFLAGS = -L$(PJDIR)/pjsip-apps/lib -Wl,-whole-archive -lasterisk_malloc_debug -Wl,-no-whole-archive
         endif
+		MALLOC_DEBUG_LIBS = source/pjsip-apps/lib/libasterisk_malloc_debug.a
+		ifneq ($(findstring darwin,$(OSARCH)),)
+			MALLOC_DEBUG_LDFLAGS = -L$(PJDIR)/pjsip-apps/lib -Wl,-all_load -lasterisk_malloc_debug -Wl,-noall_load
+		else
+			 # These are used for all but Darwin
+			MALLOC_DEBUG_LDFLAGS = -L$(PJDIR)/pjsip-apps/lib -Wl,-whole-archive -lasterisk_malloc_debug -Wl,-no-whole-archive
+		endif
         ifeq ($(findstring DONT_OPTIMIZE,$(MENUSELECT_CFLAGS)),)
             CF += -O3
         endif
@@ -234,34 +235,19 @@ $(apps): $(MALLOC_DEBUG_LIBS) pjproject.symbols
 	$(CMD_PREFIX) +$(MAKE) -C source/pjsip-apps/build $(APP) $(REALLY_QUIET)
 	$(CMD_PREFIX) touch $@
 
-source/pjsip-apps/src/python/_pjsua.o: source/pjsip-apps/src/python/_pjsua.c $(apps)
-	$(ECHO_PREFIX) Compiling python bindings
-	$(CMD_PREFIX) $(CC) -o $@ -c $< $(PYTHONDEV_INCLUDE) $(CFLAGS) $(PJ_CFLAGS)
-
-source/pjsip-apps/src/python/_pjsua.so: LDFLAGS += $(MALLOC_DEBUG_LDFLAGS)
-source/pjsip-apps/src/python/_pjsua.so: source/pjsip-apps/src/python/_pjsua.o
-	$(ECHO_PREFIX) Linking python bindings $(@F)
-	$(CMD_PREFIX) $(CC) -shared -pthread -o $@ $< $(LDFLAGS) $(PJ_LDFLAGS) $(APP_LDLIBS) $(PYTHONDEV_LIB) $(REALLY_QUIET)
-
 _install: _all
 	@if [ ! -d "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject" ]; then \
 		$(INSTALL) -d "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject"; \
 	fi;
 ifneq ($(findstring source/pjsip-apps/bin/pjsua-$(TARGET_NAME),$(TARGETS)),)
-	$(ECHO_PREFIX) Installing apps
+	$(ECHO_PREFIX) Installing app
 	$(CMD_PREFIX) $(INSTALL) -m 755 source/pjsip-apps/bin/pjsua-$(TARGET_NAME) "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject/pjsua"
-	$(CMD_PREFIX) $(INSTALL) -m 755 source/pjsip-apps/bin/pjsystest-$(TARGET_NAME) "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject/pjsystest"
-endif
-ifneq ($(findstring _pjsua.so,$(TARGETS)),)
-	$(ECHO_PREFIX) Installing python bindings
-	$(CMD_PREFIX) $(INSTALL) -m 755 source/pjsip-apps/src/python/_pjsua.so "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject/"
-	$(CMD_PREFIX) $(INSTALL) -m 644 source/pjsip-apps/src/python/pjsua.py "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject/"
 endif
 
 all: _all
 
 uninstall:
-	$(ECHO_PREFIX) Uninstalling apps and python bindings
+	$(ECHO_PREFIX) Uninstalling
 	$(CMD_PREFIX) rm -rf "$(DESTDIR)$(ASTDATADIR)/third-party/pjproject"
 
 clean:
@@ -269,7 +255,7 @@ clean:
 	+-$(CMD_PREFIX) {\
 		if [ -d source ] ; then  \
 			$(SUBMAKE) -C source clean ;\
-			rm -rf source/pjsip-apps/bin/* ;\
+			rm -f source/pjsip-apps/bin/pjsua-* ;\
 			$(FIND) source/ '(' -name *.a -or -name *.o -or -name *.so ')' -delete ;\
 		fi ;\
 		rm -rf pjproject.symbols ;\
@@ -284,7 +270,6 @@ distclean: clean
 		else \
 			$(SUBMAKE) -C source distclean ;\
 			rm -rf source/build.mak source/user.mak ;\
-			$(FIND) source/ -name '*asterisk_malloc_debug*' -delete ;\
 			$(FIND) source/ '(' -name '.*.depend' -or -name '.*.astdep' ')' -delete ;\
 		fi \
 		} $(REALLY_QUIET) || :

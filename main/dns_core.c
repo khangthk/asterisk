@@ -258,7 +258,8 @@ struct ast_dns_query_active *ast_dns_resolve_async(const char *name, int rr_type
 		ao2_ref(active, -1);
 		return NULL;
 	}
-
+	ast_debug(2, "Calling %s resolver for name: %s class: %d type: %d", active->query->resolver->name,
+		name, rr_class, rr_type);
 	if (active->query->resolver->resolve(active->query)) {
 		ast_log(LOG_ERROR, "Resolver '%s' returned an error when resolving '%s' of class '%d' and type '%d'\n",
 			active->query->resolver->name, name, rr_class, rr_type);
@@ -707,7 +708,7 @@ char *dns_find_record(const char *record, size_t record_size, const char *respon
 	char *record_offset;
 
 	while (1) {
-		record_offset = memchr(search_base, record[0], remaining_size);
+		record_offset = memchr((void *)search_base, record[0], remaining_size);
 
 		ast_assert(record_offset != NULL);
 		ast_assert(search_base + remaining_size - record_offset >= record_size);

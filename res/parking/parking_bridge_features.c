@@ -46,6 +46,9 @@
 
 /*** DOCUMENTATION
 	<function name="PARK_GET_CHANNEL" language="en_US">
+		<since>
+			<version>16.0.0</version>
+		</since>
 		<synopsis>
 			Get the channel name of an occupied parking space in a parking lot.
 		</synopsis>
@@ -251,7 +254,7 @@ static struct ast_channel *park_local_transfer(struct ast_channel *parker, const
 	/* Fill the variable with the extension and context we want to call */
 	snprintf(destination, sizeof(destination), "%s@%s", exten, context);
 
-	/* Now we request that chan_local prepare to call the destination */
+	/* Now we request a Local channel to prepare to call the destination */
 	parkee = ast_request("Local", ast_channel_nativeformats(parker), NULL, parker, destination,
 		&cause);
 	if (!parkee) {

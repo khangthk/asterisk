@@ -113,7 +113,7 @@ AC_DEFUN([_PJPROJECT_CONFIGURE],
 			EXTERNALS_CACHE_DIR="${EXTERNALS_CACHE_DIR:-${AST_DOWNLOAD_CACHE}}" \
 			PJPROJECT_BUNDLED_OOT="${PJPROJECT_BUNDLED_OOT}" \
 			echo_cflags)
-		PJPROJECT_CFLAGS="$PJPROJECT_INCLUDE"
+
 		PBX_PJPROJECT=1
 
 		AC_DEFINE([HAVE_PJPROJECT], 1, [Define if your system has PJPROJECT])
@@ -139,6 +139,7 @@ AC_DEFUN([_PJPROJECT_CONFIGURE],
 		AC_DEFINE([HAVE_PJSIP_OAUTH_AUTHENTICATION], 1, [Define if your system has HAVE_PJSIP_OAUTH_AUTHENTICATION declared])
 		AC_DEFINE([HAVE_PJPROJECT_ON_VALID_ICE_PAIR_CALLBACK], 1, [Define if your system has the on_valid_pair pjnath callback.])
 		AC_DEFINE([HAVE_PJSIP_TLS_TRANSPORT_RESTART], 1, [Define if your system has pjsip_tls_transport_restart support.])
+		AC_DEFINE([HAVE_PJSIP_AUTH_NEW_DIGESTS], 1, [Define if your system has pjsip new auth algorithm support.])
 
 		AC_SUBST([PJPROJECT_BUNDLED])
 		AC_SUBST([PJPROJECT_BUNDLED_OOT])

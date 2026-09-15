@@ -176,6 +176,9 @@ struct ast_frame *ast_audiohook_read_frame(struct ast_audiohook *audiohook, size
  * \param write_frame if available, we'll copy the write buffer to this.
  * \return frame on success
  * \retval NULL on failure
+ * \note The read_frame and write_frame may be in a different format from what was specified in format depending on the sample rate
+ *       of the hooked channel's codec - ie; if we are requesting slin, but are hooked on channel using a 16K codec like g722, the
+ *       read and write frames will be slin16.
  */
 struct ast_frame *ast_audiohook_read_frame_all(struct ast_audiohook *audiohook, size_t samples, struct ast_format *format, struct ast_frame **read_frame, struct ast_frame **write_frame);
 
@@ -329,6 +332,16 @@ int ast_channel_audiohook_count_by_source_running(struct ast_channel *chan, cons
 int ast_audiohook_volume_set(struct ast_channel *chan, enum ast_audiohook_direction direction, int volume);
 
 /*!
+ * \brief Adjust the volume on frames read from or written to a channel
+ * \param chan Channel to muck with
+ * \param direction Direction to set on
+ * \param volume Value to adjust the volume by
+ * \retval 0 on success
+ * \retval -1 on failure
+ */
+int ast_audiohook_volume_set_float(struct ast_channel *chan, enum ast_audiohook_direction direction, float volume);
+
+/*!
  * \brief Retrieve the volume adjustment value on frames read from or written to a channel
  * \param chan Channel to retrieve volume adjustment from
  * \param direction Direction to retrieve
@@ -336,6 +349,14 @@ int ast_audiohook_volume_set(struct ast_channel *chan, enum ast_audiohook_direct
  * \since 1.6.1
  */
 int ast_audiohook_volume_get(struct ast_channel *chan, enum ast_audiohook_direction direction);
+
+/*!
+ * \brief Retrieve the volume adjustment value on frames read from or written to a channel
+ * \param chan Channel to retrieve volume adjustment from
+ * \param direction Direction to retrieve
+ * \return adjustment value
+ */
+float ast_audiohook_volume_get_float(struct ast_channel *chan, enum ast_audiohook_direction direction);
 
 /*!
  * \brief Adjust the volume on frames read from or written to a channel
@@ -347,6 +368,16 @@ int ast_audiohook_volume_get(struct ast_channel *chan, enum ast_audiohook_direct
  * \since 1.6.1
  */
 int ast_audiohook_volume_adjust(struct ast_channel *chan, enum ast_audiohook_direction direction, int volume);
+
+/*!
+ * \brief Adjust the volume on frames read from or written to a channel
+ * \param chan Channel to muck with
+ * \param direction Direction to increase
+ * \param volume Value to adjust the adjustment by
+ * \retval 0 on success
+ * \retval -1 on failure
+ */
+int ast_audiohook_volume_adjust_float(struct ast_channel *chan, enum ast_audiohook_direction direction, float volume);
 
 /*! \brief Mute frames read from or written to a channel
  * \param chan Channel to muck with

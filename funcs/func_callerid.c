@@ -70,6 +70,9 @@
  */
 /*** DOCUMENTATION
 	<function name="CALLERID" language="en_US">
+		<since>
+			<version>1.2.0</version>
+		</since>
 		<synopsis>
 			Gets or sets Caller*ID data on the channel.
 		</synopsis>
@@ -124,6 +127,9 @@
 					<enum name = "dnid-subaddr-type" />
 					<enum name = "dnid-subaddr-odd" />
 				</enumlist>
+				<para>Note that unlike other Caller ID fields, DNID information is not propagated
+				by the <literal>Dial</literal> application, with the exception of
+				Transmit Network Select (which is not currently used for anything).</para>
 			</parameter>
 			<parameter name="CID">
 				<para>Optional Caller*ID to parse instead of using the Caller*ID from the
@@ -202,6 +208,9 @@
 		</description>
 	</function>
 	<function name="CONNECTEDLINE" language="en_US">
+		<since>
+			<version>1.8.0</version>
+		</since>
 		<synopsis>
 			Gets or sets Connected Line data on the channel.
 		</synopsis>
@@ -299,6 +308,9 @@
 		</description>
 	</function>
 	<function name="REDIRECTING" language="en_US">
+		<since>
+			<version>1.8.0</version>
+		</since>
 		<synopsis>
 			Gets or sets Redirecting data on the channel.
 		</synopsis>
@@ -1039,7 +1051,9 @@ static int callerid_read(struct ast_channel *chan, const char *cmd, char *data, 
 				ast_log(LOG_ERROR, "Unknown callerid data type '%s'.\n", data);
 			}
 		} else if (member.argc == 1 && !strcasecmp("ani2", member.subnames[0])) {
-			snprintf(buf, len, "%d", ast_channel_caller(chan)->ani2);
+			/* ANI2 is always formatted as two digits:
+			 * https://nanpa.com/numbering/ani-ii-digits */
+			snprintf(buf, len, "%02d", ast_channel_caller(chan)->ani2);
 		} else if (!strcasecmp("ani", member.subnames[0])) {
 			if (member.argc == 1) {
 				/* Setup as if user had given ani-num instead. */

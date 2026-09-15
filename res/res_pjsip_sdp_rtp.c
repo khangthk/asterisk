@@ -267,9 +267,25 @@ static int create_rtp(struct ast_sip_session *session, struct ast_sip_session_me
 		}
 	}
 
-	if (!(session_media->rtp = ast_rtp_instance_new(session->endpoint->media.rtp.engine, sched, media_address, NULL))) {
-		ast_log(LOG_ERROR, "Unable to create RTP instance using RTP engine '%s'\n", session->endpoint->media.rtp.engine);
-		return -1;
+	if (session->endpoint->media.rtp.port_start && session->endpoint->media.rtp.port_end) {
+		struct ast_rtp_instance_options options = {
+			.port_start = session->endpoint->media.rtp.port_start,
+			.port_end = session->endpoint->media.rtp.port_end,
+		};
+		if (!(session_media->rtp = ast_rtp_instance_new_with_options(
+				session->endpoint->media.rtp.engine, sched, media_address, NULL,
+				&options))) {
+			ast_log(LOG_ERROR, "Unable to create RTP instance using RTP engine '%s' with port range %u-%u\n",
+				session->endpoint->media.rtp.engine,
+				session->endpoint->media.rtp.port_start,
+				session->endpoint->media.rtp.port_end);
+			return -1;
+		}
+	} else {
+		if (!(session_media->rtp = ast_rtp_instance_new(session->endpoint->media.rtp.engine, sched, media_address, NULL))) {
+			ast_log(LOG_ERROR, "Unable to create RTP instance using RTP engine '%s'\n", session->endpoint->media.rtp.engine);
+			return -1;
+		}
 	}
 
 	ast_rtp_instance_set_prop(session_media->rtp, AST_RTP_PROPERTY_NAT, session->endpoint->media.rtp.symmetric);
@@ -493,7 +509,16 @@ static struct ast_format_cap *set_incoming_call_offer_cap(
 	 */
 	ast_rtp_codecs_payloads_xover(&codecs, &codecs, NULL);
 
-	ast_rtp_codecs_payloads_copy(&codecs,
+	/*
+	 * This only merges the newly offered payloads into the live RTP instance
+	 * rather than doing a destructive replace, so any format the channel is
+	 * still actively sending in (e.g. while a reINVITE is in flight) remains
+	 * usable right up until set_caps() commits the channel to the new
+	 * negotiated format. A destructive replace here, before the channel's
+	 * own read/write format has caught up, is what let a concurrent bridge
+	 * write briefly land on a payload mapping that no longer had its format.
+	 */
+	ast_rtp_codecs_payloads_merge(&codecs,
 		ast_rtp_instance_get_codecs(session_media->rtp), session_media->rtp);
 
 	ast_rtp_codecs_payloads_destroy(&codecs);
@@ -565,13 +590,17 @@ static int set_caps(struct ast_sip_session *session,
 		 */
 		ast_rtp_codecs_payloads_xover(&codecs, &codecs, NULL);
 	}
+
+	if (session->channel) {
+		ast_channel_lock(session->channel);
+	}
+
 	ast_rtp_codecs_payloads_copy(&codecs, ast_rtp_instance_get_codecs(session_media->rtp),
 		session_media->rtp);
 
 	apply_cap_to_bundled(session_media, session_media_transport, asterisk_stream, joint);
 
 	if (session->channel && ast_sip_session_is_pending_stream_default(session, asterisk_stream)) {
-		ast_channel_lock(session->channel);
 		ast_format_cap_remove_by_type(caps, AST_MEDIA_TYPE_UNKNOWN);
 		ast_format_cap_append_from_cap(caps, ast_channel_nativeformats(session->channel),
 			AST_MEDIA_TYPE_UNKNOWN);
@@ -625,7 +654,9 @@ static int set_caps(struct ast_sip_session *session,
 		if (ast_channel_is_bridged(session->channel)) {
 			ast_channel_set_unbridged_nolock(session->channel, 1);
 		}
+	}
 
+	if (session->channel) {
 		ast_channel_unlock(session->channel);
 	}
 
@@ -2321,14 +2352,18 @@ static int apply_negotiated_sdp_stream(struct ast_sip_session *session,
 	if (session_media->remotely_held_changed) {
 		if (session_media->remotely_held) {
 			/* The remote side has put us on hold */
-			ast_queue_hold(session->channel, session->endpoint->mohsuggest);
-			ast_rtp_instance_stop(session_media->rtp);
-			ast_queue_frame(session->channel, &ast_null_frame);
+			if (!session->endpoint->suppress_moh_on_sendonly) {
+				ast_queue_hold(session->channel, session->endpoint->mohsuggest);
+				ast_rtp_instance_stop(session_media->rtp);
+				ast_queue_frame(session->channel, &ast_null_frame);
+			}
 			session_media->remotely_held_changed = 0;
 		} else {
 			/* The remote side has taken us off hold */
-			ast_queue_unhold(session->channel);
-			ast_queue_frame(session->channel, &ast_null_frame);
+			if (!session->endpoint->suppress_moh_on_sendonly) {
+				ast_queue_unhold(session->channel);
+				ast_queue_frame(session->channel, &ast_null_frame);
+			}
 			session_media->remotely_held_changed = 0;
 		}
 	} else if ((pjmedia_sdp_neg_was_answer_remote(session->inv_session->neg) == PJ_FALSE)

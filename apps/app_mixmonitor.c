@@ -60,9 +60,13 @@
 #include "asterisk/mixmonitor.h"
 #include "asterisk/format_cache.h"
 #include "asterisk/beep.h"
+#include "asterisk/translate.h"
 
 /*** DOCUMENTATION
 	<application name="MixMonitor" language="en_US">
+		<since>
+			<version>1.2.0</version>
+		</since>
 		<synopsis>
 			Record a call and mix the audio during the recording.  Use of StopMixMonitor is required
 			to guarantee the audio file is available for processing during dialplan execution.
@@ -127,6 +131,13 @@
 						Like with the basic filename argument, if an absolute path isn't given, it will create
 						the file in the configured monitoring directory.</para>
 					</option>
+					<option name="D">
+						<para>Interleave the audio coming from the channel and the audio
+						going to the channel and output it as a 2 channel (stereo)
+						raw stream rather than mixing it. You must use the
+						<literal>.raw</literal> file extension. Any other extension
+						will produce a corrupted file.</para>
+					</option>
 					<option name="n">
 						<para>When the <replaceable>r</replaceable> or <replaceable>t</replaceable> option is
 						used, MixMonitor will insert silence into the specified files to maintain
@@ -148,6 +159,13 @@
 						separated by commas eg. m(1111@default,2222@default,...).  Folders can be optionally specified using
 						the syntax: mailbox@context/folder</para>
 					</option>
+					<option name="s">
+						<argument name="seconds" required="true" />
+						<para>Don't record until <replaceable>seconds</replaceable> (can be fractional) have elapsed since MixMonitor was invoked.
+						No audio is written to the recording file during this time. If the call ends before this period,
+						no audio will be saved. This can be useful to avoid recording announcements,
+						ringback tones, or other non-essential early audio.</para>
+					</option>
 				</optionlist>
 			</parameter>
 			<parameter name="command">
@@ -163,7 +181,7 @@
 		</syntax>
 		<description>
 			<para>Records the audio on the current channel to the specified file.</para>
-			<para>This application does not automatically answer and should be preceeded by
+			<para>This application does not automatically answer and should be preceded by
 			an application such as Answer or Progress().</para>
 			<note><para>MixMonitor runs as an audiohook.</para></note>
 			<note><para>If a filename passed to MixMonitor ends with
@@ -181,12 +199,18 @@
 			parameters.  You risk a command injection attack executing arbitrary commands
 			if the untrusted strings aren't filtered to remove dangerous characters.  See
 			function <variable>FILTER()</variable>.</para></warning>
+			<warning><para>When using the <literal>D</literal> option to save
+			interleaved audio, you MUST use <literal>.raw</literal> as the
+			file extension.  Any other extension will produce a corrupted file.</para></warning>
 		</description>
 		<see-also>
 			<ref type="application">StopMixMonitor</ref>
 		</see-also>
 	</application>
 	<application name="StopMixMonitor" language="en_US">
+		<since>
+			<version>1.4.0</version>
+		</since>
 		<synopsis>
 			Stop recording a call through MixMonitor, and free the recording's file handle.
 		</synopsis>
@@ -205,6 +229,9 @@
 		</see-also>
 	</application>
 	<manager name="MixMonitorMute" language="en_US">
+		<since>
+			<version>1.8.0</version>
+		</since>
 		<synopsis>
 			Mute / unMute a Mixmonitor recording.
 		</synopsis>
@@ -225,6 +252,9 @@
 		</description>
 	</manager>
 	<manager name="MixMonitor" language="en_US">
+		<since>
+			<version>11.0.0</version>
+		</since>
 		<synopsis>
 			Record a call and mix the audio during the recording.  Use of StopMixMonitor is required
 			to guarantee the audio file is available for processing during dialplan execution.
@@ -242,7 +272,7 @@
 				neither MIXMONITOR_FILENAME or this parameter is set, the mixed stream won't
 				be recorded.</para>
 			</parameter>
-			<parameter name="options">
+			<parameter name="Options">
 				<para>Options that apply to the MixMonitor in the same way as they
 				would apply if invoked from the MixMonitor application. For a list of
 				available options, see the documentation for the mixmonitor application. </para>
@@ -268,6 +298,9 @@
 		</description>
 	</manager>
 	<manager name="StopMixMonitor" language="en_US">
+		<since>
+			<version>11.0.0</version>
+		</since>
 		<synopsis>
 			Stop recording a call through MixMonitor, and free the recording's file handle.
 		</synopsis>
@@ -287,6 +320,9 @@
 		</description>
 	</manager>
 	<function name="MIXMONITOR" language="en_US">
+		<since>
+			<version>13.0.0</version>
+		</since>
 		<synopsis>
 			Retrieve data pertaining to specific instances of MixMonitor on a channel.
 		</synopsis>
@@ -305,6 +341,10 @@
 	</function>
 	<managerEvent language="en_US" name="MixMonitorStart">
 		<managerEventInstance class="EVENT_FLAG_CALL">
+			<since>
+				<version>16.17.0</version>
+				<version>18.3.0</version>
+			</since>
 			<synopsis>Raised when monitoring has started on a channel.</synopsis>
 			<syntax>
 				<channel_snapshot/>
@@ -318,6 +358,10 @@
 	</managerEvent>
 	<managerEvent language="en_US" name="MixMonitorStop">
 		<managerEventInstance class="EVENT_FLAG_CALL">
+			<since>
+				<version>16.17.0</version>
+				<version>18.3.0</version>
+			</since>
 		<synopsis>Raised when monitoring has stopped on a channel.</synopsis>
 		<syntax>
 			<channel_snapshot/>
@@ -331,6 +375,10 @@
 	</managerEvent>
 	<managerEvent language="en_US" name="MixMonitorMute">
 		<managerEventInstance class="EVENT_FLAG_CALL">
+			<since>
+				<version>16.17.0</version>
+				<version>18.3.0</version>
+			</since>
 		<synopsis>Raised when monitoring is muted or unmuted on a channel.</synopsis>
 		<syntax>
 			<channel_snapshot/>
@@ -352,6 +400,8 @@
  ***/
 
 #define get_volfactor(x) x ? ((x > 0) ? (1 << x) : ((1 << abs(x)) * -1)) : 0
+
+#define MIN_SKIP_SECONDS 1
 
 static const char * const app = "MixMonitor";
 
@@ -391,6 +441,9 @@ struct mixmonitor {
 	);
 	int call_priority;
 
+	/* Number of seconds (can be fractional) to skip at the start of recording */
+	double skip_seconds;
+
 	/* FUTURE DEVELOPMENT NOTICE
 	 * recipient_list will need locks if we make it editable after the monitor is started */
 	AST_LIST_HEAD_NOLOCK(, vm_recipient) recipient_list;
@@ -414,6 +467,8 @@ enum mixmonitor_flags {
 	MUXFLAG_NO_RWSYNC = (1 << 15),
 	MUXFLAG_AUTO_DELETE = (1 << 16),
 	MUXFLAG_REAL_CALLERID = (1 << 17),
+	MUXFLAG_INTERLEAVED = (1 << 18),
+	MUXFLAG_SKIP = (1 << 19),
 };
 
 enum mixmonitor_args {
@@ -427,6 +482,7 @@ enum mixmonitor_args {
 	OPT_ARG_BEEP_INTERVAL,
 	OPT_ARG_DEPRECATED_RWSYNC,
 	OPT_ARG_NO_RWSYNC,
+	OPT_ARG_SKIP,
 	OPT_ARG_ARRAY_SIZE,	/* Always last element of the enum */
 };
 
@@ -443,10 +499,12 @@ AST_APP_OPTIONS(mixmonitor_opts, {
 	AST_APP_OPTION_ARG('W', MUXFLAG_VOLUME, OPT_ARG_VOLUME),
 	AST_APP_OPTION_ARG('r', MUXFLAG_READ, OPT_ARG_READNAME),
 	AST_APP_OPTION_ARG('t', MUXFLAG_WRITE, OPT_ARG_WRITENAME),
+	AST_APP_OPTION('D', MUXFLAG_INTERLEAVED),
 	AST_APP_OPTION_ARG('i', MUXFLAG_UID, OPT_ARG_UID),
 	AST_APP_OPTION_ARG('m', MUXFLAG_VMRECIPIENTS, OPT_ARG_VMRECIPIENTS),
 	AST_APP_OPTION_ARG('S', MUXFLAG_DEPRECATED_RWSYNC, OPT_ARG_DEPRECATED_RWSYNC),
 	AST_APP_OPTION_ARG('n', MUXFLAG_NO_RWSYNC, OPT_ARG_NO_RWSYNC),
+	AST_APP_OPTION_ARG('s', MUXFLAG_SKIP, OPT_ARG_SKIP),
 });
 
 struct mixmonitor_ds {
@@ -610,6 +668,81 @@ static void clear_mixmonitor_recipient_list(struct mixmonitor *mixmonitor)
 
 #define SAMPLES_PER_FRAME 160
 
+/* This will allocate and free the translator path as needed so it can be re-used on subsequent calls */
+static void fill_frame_buffer(struct ast_frame *source_frame,
+	struct ast_format *target_format,
+	struct ast_format **last_source_format,
+	struct ast_trans_pvt **translator_path,
+	short *dest_buf,
+	size_t dest_buf_size,
+	const char *direction)
+{
+	struct ast_frame *converted_frame = NULL;
+
+	if (!source_frame) {
+		memset(dest_buf, 0, dest_buf_size);
+		return;
+	}
+
+	/*
+	 * We only need to worry about translating if the frame format does not match
+	 * the expected format of the frame we are writing.
+	 */
+	if (ast_format_cmp(target_format, source_frame->subclass.format) == AST_FORMAT_CMP_NOT_EQUAL) {
+		/*
+		 * If the format changed from the last frame or if this is the first frame
+		 * that does not match the native format, we need to set up a new
+		 * translator path.
+		 */
+		if (ast_format_cmp(*last_source_format, source_frame->subclass.format) == AST_FORMAT_CMP_NOT_EQUAL
+			|| !*translator_path) {
+			ast_debug(3, "%s frame format changed from %s to %s, building translator path to %s\n",
+				direction,
+				*last_source_format ? ast_format_get_name(*last_source_format) : "none",
+				ast_format_get_name(source_frame->subclass.format),
+				ast_format_get_name(target_format));
+
+			if (*translator_path) {
+				ast_translator_free_path(*translator_path);
+			}
+
+			*translator_path = ast_translator_build_path(target_format, source_frame->subclass.format);
+		}
+
+		if (*translator_path) {
+			converted_frame = ast_translate(*translator_path, source_frame, 0);
+		}
+
+		/*
+		 * If creating the translated frame or translator path failed, write silence for this frame. We will
+		 * try rebuilding the translator path later if it is still needed.
+		 */
+		if (converted_frame) {
+			memcpy(dest_buf, converted_frame->data.ptr, dest_buf_size);
+			ast_frame_free(converted_frame, 1);
+		} else {
+			memset(dest_buf, 0, dest_buf_size);
+		}
+	} else {
+		memcpy(dest_buf, source_frame->data.ptr, dest_buf_size);
+
+		/*
+		 * If we are doing native frame copying, we can free the translator path if
+		 * it exists. We will create a new one later if needed.
+		 */
+		if (*translator_path) {
+			ast_translator_free_path(*translator_path);
+			*translator_path = NULL;
+			ast_debug(3, "%s frame format changed from %s to %s, translator path no longer needed\n",
+				direction,
+				*last_source_format ? ast_format_get_name(*last_source_format) : "none",
+				ast_format_get_name(source_frame->subclass.format));
+		}
+	}
+
+	*last_source_format = source_frame->subclass.format;
+}
+
 static void mixmonitor_free(struct mixmonitor *mixmonitor)
 {
 	if (mixmonitor) {
@@ -726,9 +859,16 @@ static void *mixmonitor_thread(void *obj)
 	struct ast_filestream **fs_read = NULL;
 	struct ast_filestream **fs_write = NULL;
 
+	struct ast_format *last_format_read = NULL;
+	struct ast_format *last_format_write = NULL;
+	struct ast_trans_pvt *trans_pvt_read = NULL;
+	struct ast_trans_pvt *trans_pvt_write = NULL;
+
 	unsigned int oflags;
 	int errflag = 0;
 	struct ast_format *format_slin;
+
+	struct timeval skip_start = ast_tvnow();
 
 	/* Keep callid association before any log messages */
 	if (mixmonitor->callid) {
@@ -749,6 +889,11 @@ static void *mixmonitor_thread(void *obj)
 	format_slin = ast_format_cache_get_slin_by_rate(mixmonitor->mixmonitor_ds->samp_rate);
 
 	ast_mutex_unlock(&mixmonitor->mixmonitor_ds->lock);
+
+	if (mixmonitor->skip_seconds > 0.0) {
+		ast_debug(3, "%s skipping initial %.3f seconds\n",
+			mixmonitor->name, mixmonitor->skip_seconds);
+	}
 
 	/* The audiohook must enter and exit the loop locked */
 	ast_audiohook_lock(&mixmonitor->audiohook);
@@ -775,6 +920,22 @@ static void *mixmonitor_thread(void *obj)
 			|| mixmonitor_autochan_is_bridged(mixmonitor->autochan)) {
 			ast_mutex_lock(&mixmonitor->mixmonitor_ds->lock);
 
+			/* Skip writing audio for the first N seconds */
+			if (mixmonitor->skip_seconds > 0.0) {
+				struct timeval now = ast_tvnow();
+				double elapsed = ast_tvdiff_ms(now, skip_start) / 1000.0;
+
+				if (elapsed < mixmonitor->skip_seconds) {
+					ast_mutex_unlock(&mixmonitor->mixmonitor_ds->lock);
+					/* Skip this frame and continue */
+					goto frame_cleanup;
+				} else {
+					ast_debug(3, "%s skip period %.3f seconds elapsed; starting to write audio\n",
+						mixmonitor->name, mixmonitor->skip_seconds);
+					mixmonitor->skip_seconds = 0.0;
+				}
+			}
+
 			/* Write out the frame(s) */
 			if ((*fs_read) && (fr_read)) {
 				struct ast_frame *cur;
@@ -792,6 +953,50 @@ static void *mixmonitor_thread(void *obj)
 				}
 			}
 
+			if (ast_test_flag(mixmonitor, MUXFLAG_INTERLEAVED)) {
+				/* The 'D' option is set, so mix the frame as an interleaved dual channel frame */
+				int i;
+				/*
+				 * We are fed by a call to ast_audiohook_read_frame_all specifying format_slin. However
+				 * we may get frames back in a different format. Either way, we we will translate them
+				 * to the format with the correct frame size before writing into these buffers.
+				 */
+				short read_buf[SAMPLES_PER_FRAME];
+				short write_buf[SAMPLES_PER_FRAME];
+				short stereo_buf[SAMPLES_PER_FRAME * 2];
+				struct ast_frame stereo_frame = {
+					.frametype = AST_FRAME_VOICE,
+					.datalen = sizeof(stereo_buf),
+					.samples = SAMPLES_PER_FRAME,
+				};
+
+				if (fr) {
+					ast_frame_free(fr, 0);
+					fr = NULL;
+				}
+
+				/*
+				 * Depending on the input codec's rate (which may change during the call) we may get frames in
+				 * a slin format that does not match the native format_slin of the mixmonitor.  In that case
+				 * we need to translate.
+				 */
+				fill_frame_buffer(fr_read, format_slin, &last_format_read, &trans_pvt_read,
+					read_buf, sizeof(read_buf), "Read");
+
+				fill_frame_buffer(fr_write, format_slin, &last_format_write, &trans_pvt_write,
+					write_buf, sizeof(write_buf), "Write");
+
+				for (i = 0; i < SAMPLES_PER_FRAME; i++) {
+					stereo_buf[i * 2] = read_buf[i];
+					stereo_buf[i * 2 + 1] = write_buf[i];
+				}
+
+				stereo_frame.data.ptr = stereo_buf;
+				stereo_frame.subclass.format = format_slin;
+
+				fr = ast_frdup(&stereo_frame);
+			}
+
 			if ((*fs) && (fr)) {
 				struct ast_frame *cur;
 
@@ -801,6 +1006,8 @@ static void *mixmonitor_thread(void *obj)
 			}
 			ast_mutex_unlock(&mixmonitor->mixmonitor_ds->lock);
 		}
+
+frame_cleanup:
 		/* All done! free it. */
 		if (fr) {
 			ast_frame_free(fr, 0);
@@ -836,6 +1043,16 @@ static void *mixmonitor_thread(void *obj)
 		ast_cond_wait(&mixmonitor->mixmonitor_ds->destruction_condition, &mixmonitor->mixmonitor_ds->lock);
 	}
 	ast_mutex_unlock(&mixmonitor->mixmonitor_ds->lock);
+
+	/* Free the translate paths */
+	if (trans_pvt_read) {
+		ast_translator_free_path(trans_pvt_read);
+		trans_pvt_read = NULL;
+	}
+	if (trans_pvt_write) {
+		ast_translator_free_path(trans_pvt_write);
+		trans_pvt_write = NULL;
+	}
 
 	/* kill the audiohook */
 	destroy_monitor_audiohook(mixmonitor);
@@ -942,12 +1159,10 @@ static void mixmonitor_ds_remove_and_free(struct ast_channel *chan, const char *
 
 	datastore = ast_channel_datastore_find(chan, &mixmonitor_ds_info, datastore_id);
 
-	/*
-	 * Currently the one place this function is called from guarantees a
-	 * datastore is present, thus return checks can be avoided here.
-	 */
-	ast_channel_datastore_remove(chan, datastore);
-	ast_datastore_free(datastore);
+	if (datastore) {
+		ast_channel_datastore_remove(chan, datastore);
+		ast_datastore_free(datastore);
+	}
 
 	ast_channel_unlock(chan);
 }
@@ -956,7 +1171,7 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 				  unsigned int flags, int readvol, int writevol,
 				  const char *post_process, const char *filename_write,
 				  char *filename_read, const char *uid_channel_var,
-				  const char *recipients, const char *beep_id)
+				  const char *recipients, const char *beep_id, double skip_seconds)
 {
 	pthread_t thread;
 	struct mixmonitor *mixmonitor;
@@ -998,6 +1213,7 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 
 	/* Copy over flags and channel name */
 	mixmonitor->flags = flags;
+	mixmonitor->skip_seconds = skip_seconds;
 	if (!(mixmonitor->autochan = ast_autochan_setup(chan))) {
 		mixmonitor_free(mixmonitor);
 		return -1;
@@ -1153,6 +1369,7 @@ static char *filename_parse(char *filename, char *buffer, size_t len)
 static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 {
 	int x, readvol = 0, writevol = 0;
+	double skip_seconds = 0.0;
 	char *filename_read = NULL;
 	char *filename_write = NULL;
 	char filename_buffer[1024] = "";
@@ -1252,6 +1469,22 @@ static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 				return -1;
 			}
 		}
+
+		if (ast_test_flag(&flags, MUXFLAG_SKIP)) {
+			if (ast_strlen_zero(opts[OPT_ARG_SKIP])) {
+				ast_log(LOG_WARNING, "No skip value provided for the 's' (skip) option; skipping will be ignored as no default exists.\n");
+			} else {
+				char *endptr = NULL;
+				double val = strtod(opts[OPT_ARG_SKIP], &endptr);
+				if (endptr == opts[OPT_ARG_SKIP] || *endptr != '\0') {
+					ast_log(LOG_WARNING, "Skip value '%s' is not a valid number; ignoring skip.\n", opts[OPT_ARG_SKIP]);
+				} else if (val < (double) MIN_SKIP_SECONDS) {
+					ast_log(LOG_WARNING, "Skip value %.3f is below minimum %d; ignoring skip.\n", val, MIN_SKIP_SECONDS);
+				} else {
+					skip_seconds = val;
+				}
+			}
+		}
 	}
 	/* If there are no file writing arguments/options for the mix monitor, send a warning message and return -1 */
 
@@ -1279,7 +1512,8 @@ static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 			filename_read,
 			uid_channel_var,
 			recipients,
-			beep_id)) {
+			beep_id,
+			skip_seconds)) {
 		ast_module_unref(ast_module_info->self);
 	}
 

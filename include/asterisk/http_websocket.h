@@ -47,6 +47,26 @@
  *
  */
 
+/*! \brief WebSocket connection/configuration types.
+ *
+ * These may look like they overlap or are redundant, but
+ * they're shared by other modules like ari and chan_websocket
+ * and it didn't make sense to force them to define their
+ * own types.
+ */
+enum ast_websocket_type {
+	AST_WS_TYPE_CLIENT_PERSISTENT = (1 << 0),
+	AST_WS_TYPE_CLIENT_PER_CALL_CONFIG = (1 << 1),
+	AST_WS_TYPE_CLIENT_PER_CALL = (1 << 2),
+	AST_WS_TYPE_CLIENT = (1 << 3),
+	AST_WS_TYPE_INBOUND = (1 << 4),
+	AST_WS_TYPE_SERVER = (1 << 5),
+	AST_WS_TYPE_ANY = (0xFFFFFFFF),
+};
+
+const char *ast_websocket_type_to_str(enum ast_websocket_type type);
+
+
 /*! \brief WebSocket operation codes */
 enum ast_websocket_opcode {
 	AST_WEBSOCKET_OPCODE_TEXT = 0x1,         /*!< Text frame */
@@ -55,7 +75,36 @@ enum ast_websocket_opcode {
 	AST_WEBSOCKET_OPCODE_PONG = 0xA,         /*!< Response to a ping */
 	AST_WEBSOCKET_OPCODE_CLOSE = 0x8,        /*!< Connection is being closed */
 	AST_WEBSOCKET_OPCODE_CONTINUATION = 0x0, /*!< Continuation of a previous frame */
+	AST_WEBSOCKET_OPCODE_UNKNOWN = 0xf,      /*!< Error */
 };
+
+/*! \brief Websocket Status Codes from RFC-6455 */
+enum ast_websocket_status_code {
+	AST_WEBSOCKET_STATUS_NORMAL = 1000,
+	AST_WEBSOCKET_STATUS_GOING_AWAY = 1001,
+	AST_WEBSOCKET_STATUS_PROTOCOL_ERROR = 1002,
+	AST_WEBSOCKET_STATUS_UNSUPPORTED_DATA = 1003,
+	AST_WEBSOCKET_STATUS_RESERVED_1004 = 1004,
+	AST_WEBSOCKET_STATUS_RESERVED_1005 = 1005,
+	AST_WEBSOCKET_STATUS_RESERVED_1006 = 1006,
+	AST_WEBSOCKET_STATUS_INVALID_FRAME = 1007,
+	AST_WEBSOCKET_STATUS_POLICY_VIOLATION = 1008,
+	AST_WEBSOCKET_STATUS_TOO_BIG = 1009,
+	AST_WEBSOCKET_STATUS_MANDATORY_EXT = 1010,
+	AST_WEBSOCKET_STATUS_INTERNAL_ERROR = 1011,
+	AST_WEBSOCKET_STATUS_RESERVED_1012 = 1012,
+	AST_WEBSOCKET_STATUS_RESERVED_1013 = 1013,
+	AST_WEBSOCKET_STATUS_BAD_GATEWAY = 1014,
+	AST_WEBSOCKET_STATUS_RESERVED_1015 = 1015,
+};
+
+#ifdef LOW_MEMORY
+/*! \brief Size of the pre-determined buffer for WebSocket frames */
+#define AST_WEBSOCKET_MAX_RX_PAYLOAD_SIZE 8192
+#else
+/*! \brief Size of the pre-determined buffer for WebSocket frames */
+#define AST_WEBSOCKET_MAX_RX_PAYLOAD_SIZE 65535
+#endif
 
 /*!
  * \brief Opaque structure for WebSocket server.
@@ -397,7 +446,7 @@ AST_OPTIONAL_API(const char *, ast_websocket_session_id, (struct ast_websocket *
  * \brief Result code for a websocket client.
  */
 enum ast_websocket_result {
-	WS_OK,
+	WS_OK = 0,
 	WS_ALLOCATE_ERROR,
 	WS_KEY_ERROR,
 	WS_URI_PARSE_ERROR,
@@ -411,6 +460,8 @@ enum ast_websocket_result {
 	WS_NOT_SUPPORTED,
 	WS_WRITE_ERROR,
 	WS_CLIENT_START_ERROR,
+	WS_UNAUTHORIZED,
+	WS_TLS_ERROR,
 };
 
 /*!
@@ -431,9 +482,15 @@ enum ast_websocket_result {
  * \param protocols a comma separated string of supported protocols
  * \param tls_cfg secure websocket credentials
  * \param result result code set on client failure
+ *
  * \return a client websocket.
  * \retval NULL if object could not be created or connected
  * \since 13
+ *
+ * \warning The returned websocket must be closed with \ref ast_websocket_close
+ * and its reference count decremented with \ref ast_websocket_unref when
+ * it's no longer needed.
+ *
  */
 AST_OPTIONAL_API(struct ast_websocket *, ast_websocket_client_create,
 		 (const char *uri, const char *protocols,
@@ -468,6 +525,37 @@ struct ast_websocket_client_options {
 	 * Secure websocket credentials
 	 */
 	struct ast_tls_config *tls_cfg;
+	const char *username;          /*!< WebSocket server auth username */
+	const char *password;          /*!< WebSocket server auth password */
+
+	int suppress_connection_msgs;  /*!< Suppress connection log messages */
+	/*!
+	 * Forward proxy
+	 */
+	const char *proxy_host;      /*!< Proxy server host:port */
+	const char *proxy_username;  /*!< Proxy server auth username */
+	const char *proxy_password;  /*!< Proxy server auth password */
+	/*!
+	 * TCP Keepalives
+	 */
+	int tcp_keepalives;                   /*!< Enable TCP keepalives */
+	unsigned int tcp_keepalive_time;      /*!< Start sending when connection has been idle for this many seconds */
+	unsigned int tcp_keepalive_interval;  /*!< Send keepalives at this interval in seconds */
+	unsigned int tcp_keepalive_probes;    /*!< Close connection after this many missed responses */
+	/*!
+	 * WebSocket PING/PONG
+	 */
+	int pingpongs;                   /*!< Enable Websocket PING/PONGs */
+	unsigned int pingpong_interval;  /*!< Send PING messages at this interval in seconds */
+	unsigned int pingpong_probes;    /*!< Close connection after this many missed responses */
+	/*!
+	 * Optional write timeout
+	 *
+	 * How long (in milliseconds) to wait for a write to the websocket to complete.
+	 * \warning This parameter is ignored if the WebSocket is in blocking mode.
+	 * Ensure ast_websocket_set_nonblock() is called before calling ast_websocket_write().
+	 */
+	int write_timeout;
 };
 
 /*!
@@ -484,6 +572,10 @@ struct ast_websocket_client_options {
  *
  * \return a client websocket.
  * \retval NULL if object could not be created or connected
+ *
+ * \warning The returned websocket must be closed with \ref ast_websocket_close
+ * and its reference count decremented with \ref ast_websocket_unref when
+ * it's no longer needed.
  */
 AST_OPTIONAL_API(struct ast_websocket *, ast_websocket_client_create_with_options,
 	(struct ast_websocket_client_options *options,
@@ -505,9 +597,32 @@ AST_OPTIONAL_API(const char *, ast_websocket_client_accept_protocol,
  * \since 11.11.0
  * \since 12.4.0
  *
+ * \warning To be effective, the socket must be in non-blocking mode because the timeout
+ * can only be checked after a read or write operation returns. If the socket is in blocking
+ * mode (the default), those calls may block for longer than the specified timeout, possibly
+ * much longer.
+ *
  * \retval 0 on success
  * \retval -1 on failure
  */
 AST_OPTIONAL_API(int, ast_websocket_set_timeout, (struct ast_websocket *session, int timeout), {return -1;});
+
+/*!
+ * \brief Convert a websocket result code to a string.
+ *
+ * \param result The result code to convert
+ *
+ * \return A string representation of the result code
+ */
+AST_OPTIONAL_API(const char *, ast_websocket_result_to_str, (enum ast_websocket_result result), {return "";});
+
+/*!
+ * \brief Convert a websocket status code to a string.
+ *
+ * \param code The code to convert
+ *
+ * \return A string representation of the code
+ */
+AST_OPTIONAL_API(const char *, ast_websocket_status_to_str, (enum ast_websocket_status_code code), {return "";});
 
 #endif

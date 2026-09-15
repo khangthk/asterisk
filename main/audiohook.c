@@ -39,17 +39,34 @@
 #include "asterisk/frame.h"
 #include "asterisk/translate.h"
 #include "asterisk/format_cache.h"
+#include "asterisk/framehook.h"
+#include "asterisk/timing.h"
 #include "asterisk/test.h"
 
 #define AST_AUDIOHOOK_SYNC_TOLERANCE 100 /*!< Tolerance in milliseconds for audiohooks synchronization */
 #define AST_AUDIOHOOK_SMALL_QUEUE_TOLERANCE 100 /*!< When small queue is enabled, this is the maximum amount of audio that can remain queued at a time. */
 #define AST_AUDIOHOOK_LONG_QUEUE_TOLERANCE 500 /*!< Otheriwise we still don't want the queue to grow indefinitely */
+#define AST_WHISPER_TIMER_INTERVAL 20
+#define AST_WHISPER_TIMER_INTERVAL_MIN 10
+#define AST_WHISPER_TIMER_INTERVAL_MAX 60
+#define AST_WHISPER_TIMER_CLAMP(interval) \
+	((interval) < AST_WHISPER_TIMER_INTERVAL_MIN ? AST_WHISPER_TIMER_INTERVAL_MIN : \
+	((interval) > AST_WHISPER_TIMER_INTERVAL_MAX ? AST_WHISPER_TIMER_INTERVAL_MAX : (interval)))
+#define AST_WHISPER_TIMER_SRC "audiohook whisper timer"
 
 #define DEFAULT_INTERNAL_SAMPLE_RATE 8000
 
 struct ast_audiohook_translate {
 	struct ast_trans_pvt *trans_pvt;
 	struct ast_format *format;
+};
+
+struct whisper_framehook_data {
+	struct ast_timer *timer;
+	int timer_fd;
+	int timer_fd_slot;
+	int timer_interval;
+	struct timeval last_external_write_tv;
 };
 
 struct ast_audiohook_list {
@@ -65,7 +82,214 @@ struct ast_audiohook_list {
 	AST_LIST_HEAD_NOLOCK(, ast_audiohook) spy_list;
 	AST_LIST_HEAD_NOLOCK(, ast_audiohook) whisper_list;
 	AST_LIST_HEAD_NOLOCK(, ast_audiohook) manipulate_list;
+	int whisper_framehook_id;
+	struct whisper_framehook_data *whisper_framehook_data;
 };
+
+static void whisper_framehook_timer_update(struct ast_audiohook_list *audiohook_list,
+	struct ast_frame *start_frame,
+	int internal_sample_rate,
+	int samples)
+{
+	struct whisper_framehook_data *hook_data;
+	int interval;
+
+	hook_data = audiohook_list->whisper_framehook_data;
+	if (!hook_data || internal_sample_rate <= 0 || samples <= 0) {
+		return;
+	}
+
+	if (start_frame->src && !strcmp(start_frame->src, AST_WHISPER_TIMER_SRC)) {
+		return;
+	}
+
+	interval = AST_WHISPER_TIMER_CLAMP((samples * 1000) / internal_sample_rate);
+	if (interval == hook_data->timer_interval) {
+		return;
+	}
+
+	hook_data->timer_interval = interval;
+	if (hook_data->timer) {
+		ast_timer_set_rate(hook_data->timer, 1000 / interval);
+	}
+}
+
+static void whisper_framehook_destroy_cb(void *data)
+{
+	ast_free(data);
+}
+
+static struct ast_frame *whisper_framehook_event_cb(struct ast_channel *chan,
+	struct ast_frame *frame,
+	enum ast_framehook_event event,
+	void *data)
+{
+	struct whisper_framehook_data *hook_data = data;
+	struct ast_audiohook_list *audiohook_list;
+	int rate;
+	int samples;
+	int write_res;
+	short buf[AST_WHISPER_TIMER_INTERVAL_MAX * 48];
+	struct ast_frame tmp_frame = {
+		.frametype = AST_FRAME_VOICE,
+		.offset = AST_FRIENDLY_OFFSET,
+		.data.ptr = buf,
+		.datalen = sizeof(buf),
+		.src = AST_WHISPER_TIMER_SRC,
+	};
+	struct ast_frame *dup;
+
+	switch (event) {
+	case AST_FRAMEHOOK_EVENT_READ:
+		/* We only care about timer driven READ events */
+		if (ast_channel_fdno(chan) != hook_data->timer_fd_slot
+			|| !hook_data->timer
+			|| ast_timer_ack(hook_data->timer, 1) < 0) {
+			return frame;
+		}
+		break;
+	case AST_FRAMEHOOK_EVENT_WRITE:
+		/*
+		 * Track WRITEs that are not triggered by the framehook so we can
+		 * avoid overlapping with WRITEs that are triggered by the framehook.
+		 */
+		if (frame && frame->frametype == AST_FRAME_VOICE
+			&& (!frame->src || strcmp(frame->src, AST_WHISPER_TIMER_SRC))) {
+			hook_data->last_external_write_tv = ast_tvnow();
+		}
+		return frame;
+	case AST_FRAMEHOOK_EVENT_ATTACHED:
+		/* Initialize the timer */
+		if (!hook_data->timer) {
+			hook_data->timer = ast_timer_open();
+			if (!hook_data->timer) {
+				return frame;
+			}
+			hook_data->timer_fd = ast_timer_fd(hook_data->timer);
+			hook_data->timer_fd_slot = ast_channel_fd_add(chan, hook_data->timer_fd);
+			if (hook_data->timer_fd_slot < 0) {
+				ast_timer_close(hook_data->timer);
+				hook_data->timer = NULL;
+				hook_data->timer_fd = -1;
+				return frame;
+			}
+			ast_timer_set_rate(hook_data->timer, 1000 / hook_data->timer_interval);
+		}
+		return frame;
+	case AST_FRAMEHOOK_EVENT_DETACHED:
+		/* Clean up the timer */
+		if (hook_data->timer_fd_slot >= 0) {
+			ast_channel_set_fd(chan, hook_data->timer_fd_slot, -1);
+		}
+		if (hook_data->timer) {
+			ast_timer_close(hook_data->timer);
+		}
+		hook_data->timer = NULL;
+		hook_data->timer_fd = -1;
+		hook_data->timer_fd_slot = -1;
+		return frame;
+	}
+
+	/*
+	 * If normal outbound media frames are actively flowing (determined by tracking the
+	 * WRITE events above,) skip timer-based fallback injection. This avoids overlapping
+	 * WRITE frames and the resulting garbled audio.
+	 */
+	if (!ast_tvzero(hook_data->last_external_write_tv)
+		&& ast_tvdiff_ms(ast_tvnow(), hook_data->last_external_write_tv)
+		<= (hook_data->timer_interval * 2)) {
+		return frame;
+	}
+
+	audiohook_list = ast_channel_audiohooks(chan);
+
+	/*
+	 * As this framehook is dependant on the whisper audiohook(s) existing, this check
+	 * should never fail.
+	 */
+	if (!audiohook_list || AST_LIST_EMPTY(&audiohook_list->whisper_list)) {
+		return frame;
+	}
+
+	rate = audiohook_list->list_internal_samp_rate;
+	if (rate <= 0) {
+		rate = DEFAULT_INTERNAL_SAMPLE_RATE;
+	}
+	samples = (rate / 1000) * hook_data->timer_interval;
+	if (!samples || samples > ARRAY_LEN(buf)) {
+		return frame;
+	}
+
+	memset(buf, 0, samples * sizeof(buf[0]));
+	tmp_frame.subclass.format = ast_format_cache_get_slin_by_rate(rate);
+	tmp_frame.samples = samples;
+	tmp_frame.datalen = samples * sizeof(buf[0]);
+
+	dup = ast_frdup(&tmp_frame);
+	if (!dup) {
+		return frame;
+	}
+
+	/*
+	 * Invoke a write on the channel with our frame to trigger mixing in
+	 * audio from the whisper audiohook list.
+	 */
+	ast_channel_unlock(chan);
+	write_res = ast_write(chan, dup);
+	ast_channel_lock(chan);
+
+	if (write_res < 0) {
+		ast_frfree(dup);
+	}
+
+	return &ast_null_frame;
+}
+
+static int whisper_framehook_attach(struct ast_channel *chan, struct ast_audiohook_list *audiohook_list)
+{
+	struct ast_framehook_interface interface = {
+		.version = AST_FRAMEHOOK_INTERFACE_VERSION,
+		.event_cb = whisper_framehook_event_cb,
+		.destroy_cb = whisper_framehook_destroy_cb,
+	};
+	struct whisper_framehook_data *hook_data;
+	int framehook_id;
+
+	if (audiohook_list->whisper_framehook_id >= 0) {
+		return 0;
+	}
+
+	hook_data = ast_calloc(1, sizeof(*hook_data));
+	if (!hook_data) {
+		return -1;
+	}
+	hook_data->timer_fd = -1;
+	hook_data->timer_fd_slot = -1;
+	hook_data->timer_interval = AST_WHISPER_TIMER_INTERVAL;
+
+	interface.data = hook_data;
+	framehook_id = ast_framehook_attach(chan, &interface);
+	if (framehook_id < 0) {
+		ast_free(hook_data);
+		return -1;
+	}
+
+	audiohook_list->whisper_framehook_id = framehook_id;
+	audiohook_list->whisper_framehook_data = hook_data;
+
+	return 0;
+}
+
+static void whisper_framehook_detach(struct ast_channel *chan, struct ast_audiohook_list *audiohook_list)
+{
+	if (audiohook_list->whisper_framehook_id < 0) {
+		return;
+	}
+
+	ast_framehook_detach(chan, audiohook_list->whisper_framehook_id);
+	audiohook_list->whisper_framehook_id = -1;
+	audiohook_list->whisper_framehook_data = NULL;
+}
 
 static int audiohook_set_internal_rate(struct ast_audiohook *audiohook, int rate, int reset)
 {
@@ -280,14 +504,51 @@ static struct ast_frame *audiohook_read_frame_both(struct ast_audiohook *audioho
 		return NULL;
 	}
 
-	/* If we want to provide only a read factory make sure we aren't waiting for other audio */
-	if (usable_read && !usable_write && (ast_tvdiff_ms(ast_tvnow(), audiohook->write_time) < (samples/8)*2)) {
+	/* usable_read=1: indicates that read factory have the required samples
+	 * usable_write=0: indicates that write factory have not the required samples
+	 * usable_write, follows:
+	 * 1. Due to RTT issues, the direction write frame has not been received,
+	 *    and it may take more than (samples/8)*2ms to receive it.
+	 * 2. Due to packet loss, the direction write frame could not been received.
+	 *
+	 * (ast_tvdiff_ms(ast_tvnow(), audiohook->write_time) < (samples/8)*2)(Expression A): This ensures that
+	 *    packets on both sides can be read correctly even with RTT; however, if the RTT exceeds
+	 *    (samples/8)*2ms, it may result in the number of packets reading on both sides being greater than the
+	 *    actual number of packets. for example, this may cause the recording length of mixmonitor to be greater
+	 *    than the actual duration. Additionally, when RTT = 0 and packet loss is 50%, some packets in the
+	 *    write direction will never arrive. In this case, continuously waiting will only cause the read
+	 *    factory to exceed the safe length limit, resulting in both the read factory and write factory
+	 *    being cleared, thus same packets received in the read direction cannot be read.
+	 *
+	 * (ast_slinfactory_available(&audiohook->read_factory) < 2 * samples)(Expression B): This ensures that
+	 *    packets on both sides can be read correctly, even in the presence of packet loss; regardless of
+	 *    the amount of packet loss.
+	 *
+	 * (Expression A)&&(Expression B): This combination can comprehensively solve both RTT and packet loss
+	 *    issues; however when RTT exceeds (samples/8)*2ms, it may result in the number of packets read
+	 *    on both sides being greater than the actual number of packets, causing the recording length of
+	 *    mixmonitor to be longer than the actual duration. We can adjust (ast_tvdiff_ms(ast_tvnow(),
+	 *    audiohook->write_time)<(samples/8)*2) && (ast_slinfactory_available(&audiohook->read_factory) <
+	 *    2 * samples) according to actual needs, for example, setting it to (ast_tvdiff_ms(ast_tvnow(),
+	 *    audiohook->write_time) < (samples/8)*4) && (ast_slinfactory_available(&audiohook->read_factory)
+	 *    < 4 * samples).
+	 *
+	 *    Update:
+	 *       Increased time and sample thresholds allow for better handling of asymmetric streams
+	 *       (e.g., mixed codecs like alaw and G.722) and high RTT conditions.
+	 *       This avoids premature frame reads when one direction is delayed, which can cause
+	 *       audio tearing or broken recordings.
+	 *       Specifically addresses issues with MixMonitor when recording directly on a channel
+	 *       that is part of a bridge with different sample rates or codecs.
+	 *       A slight overrun in recording duration is acceptable in exchange for audio stability.
+	 */
+	if (usable_read && !usable_write && (ast_tvdiff_ms(ast_tvnow(), audiohook->write_time) < (samples/8)*4) && (ast_slinfactory_available(&audiohook->read_factory) < 4 * samples)) {
 		ast_debug(3, "Write factory %p was pretty quick last time, waiting for them.\n", &audiohook->write_factory);
 		return NULL;
 	}
 
-	/* If we want to provide only a write factory make sure we aren't waiting for other audio */
-	if (usable_write && !usable_read && (ast_tvdiff_ms(ast_tvnow(), audiohook->read_time) < (samples/8)*2)) {
+	/* As shown in the above comment. */
+	if (usable_write && !usable_read && (ast_tvdiff_ms(ast_tvnow(), audiohook->read_time) < (samples/8)*4) && (ast_slinfactory_available(&audiohook->write_factory) < 4 * samples)) {
 		ast_debug(3, "Read factory %p was pretty quick last time, waiting for them.\n", &audiohook->read_factory);
 		return NULL;
 	}
@@ -468,7 +729,7 @@ static void audiohook_list_set_samplerate_compatibility(struct ast_audiohook_lis
 	 * at that level when it should be lower, and with no way to lower it since any
 	 * rate compared against it would be lower.
 	 *
-	 * By setting it back to the lowest rate it can recalulate the new highest rate.
+	 * By setting it back to the lowest rate it can recalculate the new highest rate.
 	 */
 	audiohook_list->list_internal_samp_rate = DEFAULT_INTERNAL_SAMPLE_RATE;
 
@@ -507,13 +768,23 @@ int ast_audiohook_attach(struct ast_channel *chan, struct ast_audiohook *audioho
 		AST_LIST_HEAD_INIT_NOLOCK(&ast_channel_audiohooks(chan)->manipulate_list);
 		/* This sample rate will adjust as necessary when writing to the list. */
 		ast_channel_audiohooks(chan)->list_internal_samp_rate = DEFAULT_INTERNAL_SAMPLE_RATE;
+		ast_channel_audiohooks(chan)->whisper_framehook_id = -1;
 	}
 
 	/* Drop into respective list */
 	if (audiohook->type == AST_AUDIOHOOK_TYPE_SPY) {
 		AST_LIST_INSERT_TAIL(&ast_channel_audiohooks(chan)->spy_list, audiohook, list);
 	} else if (audiohook->type == AST_AUDIOHOOK_TYPE_WHISPER) {
+		int was_empty = AST_LIST_EMPTY(&ast_channel_audiohooks(chan)->whisper_list);
 		AST_LIST_INSERT_TAIL(&ast_channel_audiohooks(chan)->whisper_list, audiohook, list);
+		/* Only attach the framehook on the first whisper audiohook */
+		if (was_empty) {
+			if (whisper_framehook_attach(chan, ast_channel_audiohooks(chan))) {
+				AST_LIST_REMOVE(&ast_channel_audiohooks(chan)->whisper_list, audiohook, list);
+				ast_channel_unlock(chan);
+				return -1;
+			}
+		}
 	} else if (audiohook->type == AST_AUDIOHOOK_TYPE_MANIPULATE) {
 		AST_LIST_INSERT_TAIL(&ast_channel_audiohooks(chan)->manipulate_list, audiohook, list);
 	}
@@ -595,7 +866,7 @@ void ast_audiohook_detach_list(struct ast_audiohook_list *audiohook_list)
 		}
 		if (audiohook_list->out_translate[i].trans_pvt) {
 			ast_translator_free_path(audiohook_list->out_translate[i].trans_pvt);
-			ao2_cleanup(audiohook_list->in_translate[i].format);
+			ao2_cleanup(audiohook_list->out_translate[i].format);
 		}
 	}
 
@@ -731,6 +1002,10 @@ int ast_audiohook_remove(struct ast_channel *chan, struct ast_audiohook *audioho
 		AST_LIST_REMOVE(&ast_channel_audiohooks(chan)->spy_list, audiohook, list);
 	} else if (audiohook->type == AST_AUDIOHOOK_TYPE_WHISPER) {
 		AST_LIST_REMOVE(&ast_channel_audiohooks(chan)->whisper_list, audiohook, list);
+		/* Detach the framehook if this was the last whisper audiohook */
+		if (AST_LIST_EMPTY(&ast_channel_audiohooks(chan)->whisper_list)) {
+			whisper_framehook_detach(chan, ast_channel_audiohooks(chan));
+		}
 	} else if (audiohook->type == AST_AUDIOHOOK_TYPE_MANIPULATE) {
 		AST_LIST_REMOVE(&ast_channel_audiohooks(chan)->manipulate_list, audiohook, list);
 	}
@@ -1063,6 +1338,14 @@ static struct ast_frame *audio_audiohook_write_list(struct ast_channel *chan, st
 		 * was removed then the list's internal rate is reset to the default.
 		 */
 		audiohook_list->list_internal_samp_rate = internal_sample_rate;
+		/*
+		 * Update the whisper timer with the internal sample rate on WRITE only to
+		 * avoid overlapping writes.
+		 */
+		if (direction == AST_AUDIOHOOK_DIRECTION_WRITE) {
+			whisper_framehook_timer_update(audiohook_list, start_frame,
+				internal_sample_rate, samples);
+		}
 	}
 
 	return end_frame;
@@ -1182,8 +1465,8 @@ int ast_channel_audiohook_count_by_source_running(struct ast_channel *chan, cons
 /*! \brief Audiohook volume adjustment structure */
 struct audiohook_volume {
 	struct ast_audiohook audiohook; /*!< Audiohook attached to the channel */
-	int read_adjustment;            /*!< Value to adjust frames read from the channel by */
-	int write_adjustment;           /*!< Value to adjust frames written to the channel by */
+	float read_adjustment;            /*!< Value to adjust frames read from the channel by */
+	float write_adjustment;           /*!< Value to adjust frames written to the channel by */
 };
 
 /*! \brief Callback used to destroy the audiohook volume datastore
@@ -1220,14 +1503,14 @@ static int audiohook_volume_callback(struct ast_audiohook *audiohook, struct ast
 {
 	struct ast_datastore *datastore = NULL;
 	struct audiohook_volume *audiohook_volume = NULL;
-	int *gain = NULL;
+	float *gain = NULL;
 
 	/* If the audiohook is shutting down don't even bother */
 	if (audiohook->status == AST_AUDIOHOOK_STATUS_DONE) {
 		return 0;
 	}
 
-	/* Try to find the datastore containg adjustment information, if we can't just bail out */
+	/* Try to find the datastore containing adjustment information, if we can't just bail out */
 	if (!(datastore = ast_channel_datastore_find(chan, &audiohook_volume_datastore, NULL))) {
 		return 0;
 	}
@@ -1243,7 +1526,7 @@ static int audiohook_volume_callback(struct ast_audiohook *audiohook, struct ast
 
 	/* If an adjustment value is present modify the frame */
 	if (gain && *gain) {
-		ast_frame_adjust_volume(frame, *gain);
+		ast_frame_adjust_volume_float(frame, *gain);
 	}
 
 	return 0;
@@ -1292,6 +1575,11 @@ static struct audiohook_volume *audiohook_volume_get(struct ast_channel *chan, i
 
 int ast_audiohook_volume_set(struct ast_channel *chan, enum ast_audiohook_direction direction, int volume)
 {
+	return ast_audiohook_volume_adjust_float(chan, direction, (float) volume);
+}
+
+int ast_audiohook_volume_set_float(struct ast_channel *chan, enum ast_audiohook_direction direction, float volume)
+{
 	struct audiohook_volume *audiohook_volume = NULL;
 
 	/* Attempt to find the audiohook volume information, but only create it if we are not setting the adjustment value to zero */
@@ -1312,8 +1600,13 @@ int ast_audiohook_volume_set(struct ast_channel *chan, enum ast_audiohook_direct
 
 int ast_audiohook_volume_get(struct ast_channel *chan, enum ast_audiohook_direction direction)
 {
+	return (int) ast_audiohook_volume_get_float(chan, direction);
+}
+
+float ast_audiohook_volume_get_float(struct ast_channel *chan, enum ast_audiohook_direction direction)
+{
 	struct audiohook_volume *audiohook_volume = NULL;
-	int adjustment = 0;
+	float adjustment = 0;
 
 	/* Attempt to find the audiohook volume information, but do not create it as we only want to look at the values */
 	if (!(audiohook_volume = audiohook_volume_get(chan, 0))) {
@@ -1331,6 +1624,11 @@ int ast_audiohook_volume_get(struct ast_channel *chan, enum ast_audiohook_direct
 }
 
 int ast_audiohook_volume_adjust(struct ast_channel *chan, enum ast_audiohook_direction direction, int volume)
+{
+	return ast_audiohook_volume_adjust_float(chan, direction, (float) volume);
+}
+
+int ast_audiohook_volume_adjust_float(struct ast_channel *chan, enum ast_audiohook_direction direction, float volume)
 {
 	struct audiohook_volume *audiohook_volume = NULL;
 

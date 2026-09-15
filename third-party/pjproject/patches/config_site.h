@@ -25,13 +25,22 @@
 #define NDEBUG 1
 #endif
 
+#ifndef PJ_MAX_HOSTNAME
 #define PJ_MAX_HOSTNAME (256)
+#endif
+
+#ifndef PJSIP_MAX_URL_SIZE
 #define PJSIP_MAX_URL_SIZE (512)
+#endif
+
+#ifndef PJ_IOQUEUE_MAX_HANDLES
 #ifdef PJ_HAS_LINUX_EPOLL
 #define PJ_IOQUEUE_MAX_HANDLES	(5000)
 #else
 #define PJ_IOQUEUE_MAX_HANDLES	(FD_SETSIZE)
 #endif
+#endif
+
 #define PJ_IOQUEUE_HAS_SAFE_UNREG 1
 #define PJ_IOQUEUE_MAX_EVENTS_IN_SINGLE_POLL (16)
 
@@ -84,9 +93,9 @@
 #define PJ_ICE_MAX_CHECKS (PJ_ICE_MAX_CAND * PJ_ICE_MAX_CAND)
 
 /* Increase limits to allow more formats */
-#define	PJMEDIA_MAX_SDP_FMT   64
+#define	PJMEDIA_MAX_SDP_FMT   72
 #define	PJMEDIA_MAX_SDP_BANDW   4
-#define	PJMEDIA_MAX_SDP_ATTR   (PJMEDIA_MAX_SDP_FMT*3 + 4)
+#define	PJMEDIA_MAX_SDP_ATTR   (PJMEDIA_MAX_SDP_FMT*6 + 4)
 #define	PJMEDIA_MAX_SDP_MEDIA   16
 
 /*
@@ -99,7 +108,7 @@
 
 #define PJSIP_TSX_UAS_CONTINUE_ON_TP_ERROR 0
 #define PJ_SSL_SOCK_OSSL_USE_THREAD_CB 0
-#define PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER 1
+#define PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER 0
 
 /*
  * The default is 32 with 8 being used by pjproject itself.
@@ -108,3 +117,20 @@
  * we don't want to increase it too much.
  */
 #define PJSIP_MAX_MODULE 38
+
+/*
+ * Disable ICE check for source address match. Asterisk handles
+ * this itself and having both enabled causes the rtp stream
+ * to not be established correctly.
+ */
+
+#define PJ_ICE_SESS_CHECK_SRC_ADDR               0
+
+/*
+ * Disables internal absorption of retransmitted INVITE requests
+ * after ACK, restoring legacy behavior where retransmissions
+ * are forwarded to the application layer instead of being
+ * silently handled by the PJSIP stack.
+ */
+
+#define PJSIP_INV_ABSORB_RETRANS_AFTER_ACK 0

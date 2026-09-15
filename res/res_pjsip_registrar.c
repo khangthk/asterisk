@@ -41,6 +41,9 @@
 
 /*** DOCUMENTATION
 	<manager name="PJSIPShowRegistrationsInbound" language="en_US">
+		<since>
+			<version>12.0.0</version>
+		</since>
 		<synopsis>
 			Lists PJSIP inbound registrations.
 		</synopsis>
@@ -63,6 +66,10 @@
 		</see-also>
 	</manager>
 	<manager name="PJSIPShowRegistrationInboundContactStatuses" language="en_US">
+		<since>
+			<version>14.3.0</version>
+			<version>13.14.0</version>
+		</since>
 		<synopsis>
 			Lists ContactStatuses for PJSIP inbound registrations.
 		</synopsis>
@@ -75,6 +82,71 @@
 			</para>
 		</description>
 	</manager>
+	<managerEvent language="en_US" name="InboundRegistrationDetail">
+		<managerEventInstance class="EVENT_FLAG_COMMAND">
+			<since>
+				<version>12.0.0</version>
+			</since>
+			<synopsis>Provide details about the Address of Record (AoR) associated
+			with a registration.</synopsis>
+			<syntax>
+				<parameter name="ObjectType">
+					<para>The object's type. This will always be 'aor'.</para>
+				</parameter>
+				<parameter name="ObjectName">
+					<para>The name of this object.</para>
+				</parameter>
+				<parameter name="MinimumExpiration">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='minimum_expiration']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="DefaultExpiration">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='default_expiration']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="QualifyTimeout">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='qualify_timeout']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="Qualify2xxOnly">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='qualify_2xx_only']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="Mailboxes">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='mailboxes']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="SupportPath">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='support_path']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="RemoveUnavailable">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_unavailable']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="VoicemailExtension">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='voicemail_extension']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="MaxContacts">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='max_contacts']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="AuthenticateQualify">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='authenticate_qualify']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="MaximumExpiration">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='maximum_expiration']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="QualifyFrequency">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='qualify_frequency']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="RemoveExisting">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_existing']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="OutboundProxy">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='outbound_proxy']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="Contacts">
+					<para>A comma-separated list of contacts associated with this AoR.</para>
+				</parameter>
+				<parameter name="Contact">
+					<para>The specific contact associated with this registration.</para>
+				</parameter>
+			</syntax>
+		</managerEventInstance>
+	</managerEvent>
  ***/
 
 static int pj_max_hostname = PJ_MAX_HOSTNAME;
@@ -913,6 +985,7 @@ static void register_aor_core(pjsip_rx_data *rdata,
 			contact_update->expiration_time = ast_tvadd(ast_tvnow(), ast_samp2tv(expiration, 1));
 			contact_update->qualify_frequency = aor->qualify_frequency;
 			contact_update->authenticate_qualify = aor->authenticate_qualify;
+			contact_update->qualify_2xx_only = aor->qualify_2xx_only;
 			if (path_str) {
 				ast_string_field_set(contact_update, path, ast_str_buffer(path_str));
 			}
@@ -1106,55 +1179,54 @@ static struct ast_sip_aor *find_registrar_aor(struct pjsip_rx_data *rdata, struc
 {
 	struct ast_sip_aor *aor = NULL;
 	char *aor_name = NULL;
+	pjsip_sip_uri *uri;
+	pj_str_t username;
 	int i;
 
-	for (i = 0; i < AST_VECTOR_SIZE(&endpoint->ident_method_order); ++i) {
-		pj_str_t username;
-		pjsip_sip_uri *uri;
-		pjsip_authorization_hdr *header = NULL;
+	/*
+	 * RFC 3261: The To header contains the Address-of-Record
+	 * whose registration is being created, queried, or modified.
+	 */
+	uri = pjsip_uri_get_uri(rdata->msg_info.to->uri);
+	pj_strassign(&username, &uri->user);
 
-		switch (AST_VECTOR_GET(&endpoint->ident_method_order, i)) {
-		case AST_SIP_ENDPOINT_IDENTIFY_BY_USERNAME:
-			uri = pjsip_uri_get_uri(rdata->msg_info.to->uri);
+	if (ast_sip_get_ignore_uri_user_options()) {
+		pj_ssize_t semi = pj_strcspn2(&username, ";");
 
-			pj_strassign(&username, &uri->user);
-
-			/*
-			 * We may want to match without any user options getting
-			 * in the way.
-			 *
-			 * Logic adapted from AST_SIP_USER_OPTIONS_TRUNCATE_CHECK for pj_str_t.
-			 */
-			if (ast_sip_get_ignore_uri_user_options()) {
-				pj_ssize_t semi = pj_strcspn2(&username, ";");
-				if (semi < pj_strlen(&username)) {
-					username.slen = semi;
-				}
-			}
-
-			aor_name = find_aor_name(&username, &uri->host, endpoint->aors);
-			if (aor_name) {
-				ast_debug(3, "Matched aor '%s' by To username\n", aor_name);
-			}
-			break;
-		case AST_SIP_ENDPOINT_IDENTIFY_BY_AUTH_USERNAME:
-			while ((header = pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_AUTHORIZATION,
-				header ? header->next : NULL))) {
-				if (header && !pj_stricmp2(&header->scheme, "digest")) {
-					aor_name = find_aor_name(&header->credential.digest.username,
-						&header->credential.digest.realm, endpoint->aors);
-					if (aor_name) {
-						ast_debug(3, "Matched aor '%s' by Authentication username\n", aor_name);
-						break;
-					}
-				}
-			}
-			break;
-		default:
-			continue;
+		if (semi < pj_strlen(&username)) {
+			username.slen = semi;
 		}
+	}
 
-		if (aor_name) {
+	aor_name = find_aor_name(&username, &uri->host, endpoint->aors);
+	if (aor_name) {
+		ast_debug(3, "Matched aor '%s' by REGISTER To URI\n", aor_name);
+	}
+
+	if (!aor_name) {
+		for (i = 0; i < AST_VECTOR_SIZE(&endpoint->ident_method_order); ++i) {
+			pjsip_authorization_hdr *header = NULL;
+
+			if (AST_VECTOR_GET(&endpoint->ident_method_order, i)
+				!= AST_SIP_ENDPOINT_IDENTIFY_BY_AUTH_USERNAME) {
+				continue;
+			}
+
+			while ((header = pjsip_msg_find_hdr(rdata->msg_info.msg,
+				PJSIP_H_AUTHORIZATION, header ? header->next : NULL))) {
+				if (pj_stricmp2(&header->scheme, "digest")) {
+					continue;
+				}
+
+				aor_name = find_aor_name(&header->credential.digest.username,
+					&header->credential.digest.realm, endpoint->aors);
+				if (aor_name) {
+					ast_debug(3, "Matched aor '%s' by Authentication username\n",
+						aor_name);
+					break;
+				}
+			}
+
 			break;
 		}
 	}

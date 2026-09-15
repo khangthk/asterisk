@@ -38,6 +38,10 @@
 		<synopsis>Module that identifies endpoints</synopsis>
 		<configFile name="pjsip.conf">
 			<configObject name="identify">
+				<since>
+					<version>13.14.0</version>
+					<version>14.3.0</version>
+				</since>
 				<synopsis>Identifies endpoints via some criteria.</synopsis>
 				<description>
 					<para>This module provides alternatives to matching inbound requests to
@@ -54,9 +58,15 @@
 					<emphasis>any</emphasis> of the criteria.</para></note>
 				</description>
 				<configOption name="endpoint">
+					<since>
+						<version>12.0.0</version>
+					</since>
 					<synopsis>Name of endpoint identified</synopsis>
 				</configOption>
 				<configOption name="match">
+					<since>
+						<version>12.2.0</version>
+					</since>
 					<synopsis>IP addresses or networks to match against.</synopsis>
 					<description>
 						<para>The value is a comma-delimited list of IP addresses or
@@ -83,6 +93,10 @@
 					</description>
 				</configOption>
 				<configOption name="srv_lookups" default="yes">
+					<since>
+						<version>13.14.0</version>
+						<version>14.3.0</version>
+					</since>
 					<synopsis>Perform SRV lookups for provided hostnames.</synopsis>
 					<description>
 						<para>When enabled, <replaceable>srv_lookups</replaceable> will
@@ -93,6 +107,10 @@
 					</description>
 				</configOption>
 				<configOption name="match_header">
+					<since>
+						<version>13.15.0</version>
+						<version>14.4.0</version>
+					</since>
 					<synopsis>Header/value pair to match against.</synopsis>
 					<description>
 						<para>A SIP header whose value is used to match against.  SIP
@@ -111,6 +129,11 @@
 					</description>
 				</configOption>
 				<configOption name="match_request_uri">
+					<since>
+						<version>18.23.0</version>
+						<version>20.8.0</version>
+						<version>21.3.0</version>
+					</since>
 					<synopsis>Request URI to match against.</synopsis>
 					<description>
 						<para>The SIP request URI is used to match against.
@@ -125,6 +148,9 @@
 					</description>
 				</configOption>
 				<configOption name="type">
+					<since>
+						<version>12.0.0</version>
+					</since>
 					<synopsis>Must be of type 'identify'.</synopsis>
 				</configOption>
 			</configObject>
@@ -386,7 +412,7 @@ static struct ast_sip_endpoint_identifier request_identifier = {
 };
 
 /*! \brief Helper function which performs a host lookup and adds result to identify match */
-static int ip_identify_match_host_lookup(struct ip_identify_match *identify, const char *host)
+static int ip_identify_match_host_lookup(struct ip_identify_match *identify, const char *host, int *resolved)
 {
 	struct ast_sockaddr *addrs;
 	int num_addrs = 0, error = 0, i;
@@ -396,6 +422,7 @@ static int ip_identify_match_host_lookup(struct ip_identify_match *identify, con
 	if (!num_addrs) {
 		return -1;
 	}
+	*resolved = 1;
 
 	for (i = 0; i < num_addrs; ++i) {
 		/* Check if the address is already in the list, if so don't add it again */
@@ -420,7 +447,8 @@ static int ip_identify_match_host_lookup(struct ip_identify_match *identify, con
 }
 
 /*! \brief Helper function which performs an SRV lookup and then resolves the hostname */
-static int ip_identify_match_srv_lookup(struct ip_identify_match *identify, const char *prefix, const char *host, int results)
+static int ip_identify_match_srv_lookup(struct ip_identify_match *identify, const char *prefix, const char *host, int results,
+	int *resolved)
 {
 	char service[NI_MAXHOST];
 	struct srv_context *context = NULL;
@@ -436,7 +464,7 @@ static int ip_identify_match_srv_lookup(struct ip_identify_match *identify, cons
 		/* In the case of the SRV lookup we don't care if it fails, we will output a log message
 		 * when we fallback to a normal lookup.
 		 */
-		hosts = ip_identify_match_host_lookup(identify, srvhost);
+		hosts = ip_identify_match_host_lookup(identify, srvhost, resolved);
 		if (hosts == -1) {
 			results = -1;
 			break;
@@ -616,6 +644,7 @@ static int ip_identify_apply(const struct ast_sorcery *sorcery, void *obj)
 	i = ao2_iterator_init(identify->hosts, 0);
 	while ((current_string = ao2_iterator_next(&i))) {
 		int results = 0;
+		int resolved = 0;
 		char *colon = strrchr(current_string, ':');
 
 		/* We skip SRV lookup if a colon is present, assuming a port was specified */
@@ -623,32 +652,36 @@ static int ip_identify_apply(const struct ast_sorcery *sorcery, void *obj)
 			/* No port, and we know this is not an IP address, so perform SRV resolution on it */
 			if (identify->srv_lookups) {
 				results = ip_identify_match_srv_lookup(identify, "_sip._udp", current_string,
-					results);
+					results, &resolved);
 				if (results != -1) {
 					results = ip_identify_match_srv_lookup(identify, "_sip._tcp",
-						current_string, results);
+						current_string, results, &resolved);
 				}
 				if (results != -1) {
 					results = ip_identify_match_srv_lookup(identify, "_sips._tcp",
-						current_string, results);
+						current_string, results, &resolved);
 				}
 			}
 		}
 
 		/* If SRV fails fall back to a normal lookup on the host itself */
 		if (!results) {
-			results = ip_identify_match_host_lookup(identify, current_string);
+			results = ip_identify_match_host_lookup(identify, current_string, &resolved);
 		}
 
-		if (results == 0) {
-			ast_log(LOG_WARNING, "Identify '%s' provided address '%s' did not resolve to any address\n",
-				ast_sorcery_object_get_id(identify), current_string);
-		} else if (results == -1) {
+		if (results == -1) {
 			ast_log(LOG_ERROR, "Identify '%s' failed when adding resolution results of '%s'\n",
 				ast_sorcery_object_get_id(identify), current_string);
 			ao2_ref(current_string, -1);
 			ao2_iterator_destroy(&i);
 			return -1;
+		} else if (!results && resolved) {
+			ast_log(LOG_WARNING, "Identify '%s' provided address '%s' resolved, "
+			"but resolved addresses are already present for matching\n",
+			ast_sorcery_object_get_id(identify), current_string);
+		} else if (!results) {
+			ast_log(LOG_WARNING, "Identify '%s' provided address '%s' did not resolve to any address\n",
+				ast_sorcery_object_get_id(identify), current_string);
 		}
 
 		ao2_ref(current_string, -1);

@@ -649,7 +649,7 @@ struct stasis_subscription *__stasis_subscribe(struct stasis_topic *topic,
 #define stasis_subscribe(topic, callback, data) __stasis_subscribe(topic, callback, data, __FILE__, __LINE__, __PRETTY_FUNCTION__)
 
 /*!
- * \brief Create a subscription whose callbacks occur on a thread pool
+ * \brief Create a subscription whose callbacks occur on a task pool
  *
  * In addition to being AO2 managed memory (requiring an ao2_cleanup() to free
  * up this reference), the subscription must be explicitly unsubscribed from its
@@ -659,7 +659,7 @@ struct stasis_subscription *__stasis_subscribe(struct stasis_topic *topic,
  * always happen on the same thread. The invocation order of different subscriptions
  * is unspecified.
  *
- * Unlike \ref stasis_subscribe, this function will explicitly use a threadpool to
+ * Unlike \ref stasis_subscribe, this function will explicitly use a taskpool to
  * dispatch items to its \c callback. This form of subscription should be used
  * when many subscriptions may be made to the specified \c topic.
  *
@@ -678,6 +678,37 @@ struct stasis_subscription *__stasis_subscribe(struct stasis_topic *topic,
 struct stasis_subscription *__stasis_subscribe_pool(struct stasis_topic *topic,
 	stasis_subscription_cb callback, void *data, const char *file, int lineno, const char *func);
 #define stasis_subscribe_pool(topic, callback, data) __stasis_subscribe_pool(topic, callback, data, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+
+/*!
+ * \brief Create a subscription whose callbacks occur synchronously on message publishing
+ * \since 23.5.0
+ * \since 22.11.0
+ * \since 20.21.0
+ *
+ * In addition to being AO2 managed memory (requiring an ao2_cleanup() to free
+ * up this reference), the subscription must be explicitly unsubscribed from its
+ * topic using stasis_unsubscribe().
+ *
+ * The invocations of the callback are serialized, but will almost certainly not
+ * always happen on the same thread. The invocation order of different subscriptions
+ * is unspecified.
+ *
+ * This subscription will be invoked on the same thread that is publishing the message.
+ *
+ * \param topic Topic to subscribe to.
+ * \param callback Callback function for subscription messages.
+ * \param data Data to be passed to the callback, in addition to the message.
+ * \param file, lineno, func
+ * \return New \ref stasis_subscription object.
+ * \retval NULL on error.
+ *
+ * \note This callback will receive a callback with a message indicating it
+ * has been subscribed. This occurs immediately before accepted message
+ * types can be set and the callback must expect to receive it.
+ */
+struct stasis_subscription *__stasis_subscribe_synchronous(struct stasis_topic *topic,
+	stasis_subscription_cb callback, void *data, const char *file, int lineno, const char *func);
+#define stasis_subscribe_synchronous(topic, callback, data) __stasis_subscribe_synchronous(topic, callback, data, __FILE__, __LINE__, __PRETTY_FUNCTION__)
 
 /*!
  * \brief Indicate to a subscription that we are interested in a message type.

@@ -43,19 +43,31 @@
 	<configInfo name="res_resolver_unbound" language="en_US">
 		<configFile name="resolver_unbound.conf">
 			<configObject name="general">
+				<since>
+					<version>14.1.0</version>
+				</since>
 				<synopsis>General options for res_resolver_unbound</synopsis>
 				<configOption name="hosts">
+					<since>
+						<version>14.0.0</version>
+					</since>
 					<synopsis>Full path to an optional hosts file</synopsis>
 					<description><para>Hosts specified in a hosts file will be resolved within the resolver itself. If a value
 					of system is provided the system-specific file will be used.</para></description>
 				</configOption>
 				<configOption name="resolv">
+					<since>
+						<version>14.0.0</version>
+					</since>
 					<synopsis>Full path to an optional resolv.conf file</synopsis>
 					<description><para>The resolv.conf file specifies the nameservers to contact when resolving queries. If a
 					value of system is provided the system-specific file will be used. If provided alongside explicit nameservers the
 					nameservers contained within the resolv.conf file will be used after all others.</para></description>
 				</configOption>
 				<configOption name="nameserver">
+					<since>
+						<version>14.0.0</version>
+					</since>
 					<synopsis>Nameserver to use for queries</synopsis>
 					<description><para>An explicit nameserver can be specified which is used for resolving queries. If multiple
 					nameserver lines are specified the first will be the primary with failover occurring, in order, to the other
@@ -63,11 +75,17 @@
 					used before all others.</para></description>
 				</configOption>
 				<configOption name="debug">
+					<since>
+						<version>14.0.0</version>
+					</since>
 					<synopsis>Unbound debug level</synopsis>
 					<description><para>The debugging level for the unbound resolver. While there is no explicit range generally
 					the higher the number the more debug is output.</para></description>
 				</configOption>
 				<configOption name="ta_file">
+					<since>
+						<version>14.0.0</version>
+					</since>
 					<synopsis>Trust anchor file</synopsis>
 					<description><para>Full path to a file with DS and DNSKEY records in zone file format. This file is provided
 					to unbound and is used as a source for trust anchors.</para></description>
@@ -311,8 +329,8 @@ static int unbound_resolver_resolve(struct ast_dns_query *query)
 		ao2_bump(query), unbound_resolver_callback, &data->id);
 
 	if (res) {
-		ast_log(LOG_ERROR, "Failed to perform async DNS resolution of '%s'\n",
-			ast_dns_query_get_name(query));
+		ast_log(LOG_ERROR, "Failed to perform async DNS resolution of '%s': %s\n",
+			ast_dns_query_get_name(query), ub_strerror(res));
 		ao2_ref(query, -1);
 	}
 

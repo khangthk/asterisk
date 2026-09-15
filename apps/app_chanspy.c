@@ -62,6 +62,9 @@
 
 /*** DOCUMENTATION
 	<application name="ChanSpy" language="en_US">
+		<since>
+			<version>1.2.0</version>
+		</since>
 		<synopsis>
 			Listen to a channel, and optionally whisper into it.
 		</synopsis>
@@ -128,6 +131,9 @@
 						for the name).</para>
 						<argument name="mailbox" />
 						<argument name="context" />
+					</option>
+					<option name="N">
+						<para>Do not answer the channel automatically.</para>
 					</option>
 					<option name="o">
 						<para>Only listen to audio coming from this channel.</para>
@@ -204,6 +210,9 @@
 		</see-also>
 	</application>
 	<application name="ExtenSpy" language="en_US">
+		<since>
+			<version>1.4.0</version>
+		</since>
 		<synopsis>
 			Listen to a channel, and optionally whisper into it.
 		</synopsis>
@@ -283,6 +292,9 @@
 						<argument name="mailbox" />
 						<argument name="context" />
 					</option>
+					<option name="N">
+						<para>Do not answer the channel automatically.</para>
+					</option>
 					<option name="o">
 						<para>Only listen to audio coming from this channel.</para>
 					</option>
@@ -351,6 +363,9 @@
 		</see-also>
 	</application>
 	<application name="DAHDIScan" language="en_US">
+		<since>
+			<version>1.4.22</version>
+		</since>
 		<synopsis>
 			Scan DAHDI channels to monitor calls.
 		</synopsis>
@@ -399,6 +414,7 @@ enum {
 	OPTION_UNIQUEID          = (1 << 19),	/* The chanprefix is a channel uniqueid or fully specified channel name. */
 	OPTION_LONG_QUEUE        = (1 << 20),	/* Allow usage of a long queue to store audio frames. */
 	OPTION_INTERLEAVED       = (1 << 21),	/* Interleave the Read and Write frames in the output frame. */
+	OPTION_NOANSWER          = (1 << 22),	/* Do not automatically answer the channel */
 };
 
 enum {
@@ -423,6 +439,7 @@ AST_APP_OPTIONS(spy_opts, {
 	AST_APP_OPTION_ARG('g', OPTION_GROUP, OPT_ARG_GROUP),
 	AST_APP_OPTION('l', OPTION_LONG_QUEUE),
 	AST_APP_OPTION_ARG('n', OPTION_NAME, OPT_ARG_NAME),
+	AST_APP_OPTION('N', OPTION_NOANSWER),
 	AST_APP_OPTION('o', OPTION_READONLY),
 	AST_APP_OPTION('q', OPTION_QUIET),
 	AST_APP_OPTION_ARG('r', OPTION_RECORD, OPT_ARG_RECORD),
@@ -794,14 +811,23 @@ static int channel_spy(struct ast_channel *chan, struct ast_autochan *spyee_auto
 	   channel has gone away.
 	*/
 
-	/* Note: it is very important that the ast_waitfor() be the first
-	   condition in this expression, so that if we wait for some period
-	   of time before receiving a frame from our spying channel, we check
-	   for hangup on the spied-on channel _after_ knowing that a frame
-	   has arrived, since the spied-on channel could have gone away while
-	   we were waiting
+	/* Use a short waitfor timeout so we notice the spy audiohook leaving
+	   RUNNING promptly. An indefinite wait holds an autochan ref on the
+	   spyee until waitfor times out, delaying destructor / Hangup when
+	   the spy channel is not readable.
 	*/
-	while (ast_waitfor(chan, -1) > -1 && csth.spy_audiohook.status == AST_AUDIOHOOK_STATUS_RUNNING) {
+	while (csth.spy_audiohook.status == AST_AUDIOHOOK_STATUS_RUNNING) {
+		int waitres = ast_waitfor(chan, 100);
+
+		if (waitres < 0) {
+			running = -1;
+			break;
+		}
+		if (waitres == 0) {
+			/* Timeout: re-check hook status without reading. */
+			continue;
+		}
+
 		if (!(f = ast_read(chan)) || ast_check_hangup(chan)) {
 			running = -1;
 			if (f) {
@@ -990,8 +1016,9 @@ static int common_exec(struct ast_channel *chan, struct ast_flags *flags,
 		ast_channel_unlock(chan);
 	}
 
-	if (ast_channel_state(chan) != AST_STATE_UP)
+	if (!ast_test_flag(flags, OPTION_NOANSWER) && ast_channel_state(chan) != AST_STATE_UP) {
 		ast_answer(chan);
+	}
 
 	ast_channel_set_flag(chan, AST_FLAG_SPYING);
 
